@@ -34,8 +34,8 @@ android {
     applicationId 'com.star4droid.mobirig'
     minSdkVersion 21
     targetSdkVersion 36
-    versionCode 2
-    versionName "0.2.0"
+    versionCode 3
+    versionName "0.3.0"
     ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
   }
   compileOptions {
@@ -45,8 +45,10 @@ android {
   }
   buildTypes {
     release {
-      minifyEnabled true
-      shrinkResources true
+      // R8 renamed classes that gdx-gltf creates by reflection ("Constructor not found"),
+      // so the release build is not minified; the APK stays well under 10 MB.
+      minifyEnabled false
+      shrinkResources false
       // signed with the debug key so the test APK installs directly; use your own keystore for Play
       signingConfig signingConfigs.debug
       proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), 'proguard-rules.pro'

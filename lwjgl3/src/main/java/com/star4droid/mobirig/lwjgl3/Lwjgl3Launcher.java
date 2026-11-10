@@ -21,15 +21,21 @@ public class Lwjgl3Launcher {
         }
 
         // Creates a new Lwjgl3Application that runs your main class with the specified configuration.
-        createApplication(args.length > 0 ? args[0] : null);
+        createApplication(args.length > 0 && !args[0].isEmpty() ? args[0] : null);
     }
 
     private static Lwjgl3Application createApplication(String startFile) {
         Main main = new Main(new DesktopPlatform(startFile));
-        main.devMarkers = System.getProperty("mobirig.markers");   // markers json or "guess": rig automatically
-        main.devPose = System.getProperty("mobirig.pose");         // pose to show after rigging
-        main.devView = System.getProperty("mobirig.view");         // yaw,pitch,dist,targetY (factors of height)
+        main.devMarkers = prop("mobirig.markers");   // markers json or "guess": rig automatically
+        main.devPose = prop("mobirig.pose");         // pose to show after rigging
+        main.devView = prop("mobirig.view");         // yaw,pitch,dist,targetY (factors of height)
+        main.devDensity = Float.parseFloat(System.getProperty("mobirig.density", "1")); // simulate phone dpi
         return new Lwjgl3Application(main, getDefaultConfiguration());
+    }
+
+    private static String prop(String key) {
+        String v = System.getProperty(key);
+        return v == null || v.isEmpty() ? null : v;
     }
 
     private static Lwjgl3ApplicationConfiguration getDefaultConfiguration() {

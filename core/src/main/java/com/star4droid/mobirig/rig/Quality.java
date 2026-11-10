@@ -164,8 +164,8 @@ public class Quality {
                 worstPose = p.pose;
             }
         }
-        sb.append(String.format("Weights: %d unweighted, %.2f%% leaking between body parts. ", unweightedVertices, bleedPct));
-        sb.append(String.format("Worst pose: %s (%.2f%% bad edges, %.2f%% collapsed triangles).", worstPose, worstBad, worstCol));
+        sb.append(String.format(java.util.Locale.US, "Weights: %d unweighted, %.2f%% leaking between body parts. ", unweightedVertices, bleedPct));
+        sb.append(String.format(java.util.Locale.US, "Worst pose: %s (%.2f%% bad edges, %.2f%% collapsed triangles).", worstPose, worstBad, worstCol));
         return sb.toString();
     }
 }

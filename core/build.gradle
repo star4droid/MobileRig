@@ -5,7 +5,6 @@ dependencies {
   api "com.badlogicgames.gdx:gdx-freetype:$gdxVersion"
   api "com.badlogicgames.gdx:gdx:$gdxVersion"
   api "com.github.mgsx-dev.gdx-gltf:gltf:$gdxGltfVersion"
-  api "com.kotcrab.vis:vis-ui:$visUiVersion"
 
   if(enableGraalNative == 'true') {
     implementation "io.github.berstanio:gdx-svmhelper-annotations:$graalHelperVersion"

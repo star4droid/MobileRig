@@ -13,7 +13,6 @@ import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.Mesh;
 import com.badlogic.gdx.graphics.PerspectiveCamera;
 import com.badlogic.gdx.graphics.Texture;
-import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.g3d.Material;
 import com.badlogic.gdx.graphics.g3d.Model;
@@ -21,30 +20,28 @@ import com.badlogic.gdx.graphics.g3d.ModelInstance;
 import com.badlogic.gdx.graphics.g3d.attributes.IntAttribute;
 import com.badlogic.gdx.graphics.g3d.model.Node;
 import com.badlogic.gdx.graphics.g3d.model.NodePart;
+import com.badlogic.gdx.graphics.glutils.HdpiUtils;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.input.GestureDetector;
 import com.badlogic.gdx.math.Matrix4;
 import com.badlogic.gdx.math.Quaternion;
+import com.badlogic.gdx.math.Rectangle;
 import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.math.collision.BoundingBox;
-import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Stage;
-import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
-import com.badlogic.gdx.utils.Align;
+import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.JsonReader;
 import com.badlogic.gdx.utils.JsonValue;
 import com.badlogic.gdx.utils.ScreenUtils;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
-import com.kotcrab.vis.ui.VisUI;
-import com.kotcrab.vis.ui.widget.VisLabel;
-import com.kotcrab.vis.ui.widget.VisScrollPane;
-import com.kotcrab.vis.ui.widget.VisTable;
-import com.kotcrab.vis.ui.widget.VisTextButton;
+import com.star4droid.mobirig.rig.GlbExporter;
 import com.star4droid.mobirig.rig.Markers;
 import com.star4droid.mobirig.rig.Poses;
 import com.star4droid.mobirig.rig.RigException;
 import com.star4droid.mobirig.rig.RigPipeline;
 import com.star4droid.mobirig.rig.Skeleton;
+import com.star4droid.mobirig.ui.Hud;
+import com.star4droid.mobirig.ui.Theme;
 import net.mgsx.gltf.loaders.glb.GLBLoader;
 import net.mgsx.gltf.scene3d.attributes.PBRCubemapAttribute;
 import net.mgsx.gltf.scene3d.attributes.PBRTextureAttribute;
@@ -65,10 +62,12 @@ public class Main extends ApplicationAdapter {
     private final Platform platform;
     /** Desktop testing: markers JSON path or "guess" to rig automatically after the start file loads. */
     public String devMarkers;
-    /** Desktop testing: pose to show after rigging. */
+    /** Desktop testing: pose to show after rigging ("Markers" stops at the markers step). */
     public String devPose;
     /** Desktop testing: "yaw,pitch,distanceFactor,targetHeightFactor" camera after rigging. */
     public String devView;
+    /** Desktop testing: simulate a phone screen density (1 = 160 dpi). */
+    public float devDensity = 1f;
 
     private SceneManager sceneManager;
     private PerspectiveCamera camera;
@@ -76,7 +75,6 @@ public class Main extends ApplicationAdapter {
     private final OrthoController ortho = new OrthoController();
     private ShapeRenderer shapes;
     private SpriteBatch batch;
-    private BitmapFont font;
     private Cubemap diffuseCubemap, specularCubemap;
     private Texture brdfLUT;
 
@@ -94,24 +92,30 @@ public class Main extends ApplicationAdapter {
     private boolean dragMirror;
     private float dragOffset;
     private volatile String progressText;
+    private volatile float progressF;
 
-    // test step
     private Node[] jointNodes;
-    private Quaternion[] restRot;
-    private Poses.Pose pose;
+    private Pose currentPoseHolder = new Pose();
     private boolean walking, showBones = true;
-    private int weightBone = -2; // -2 off, -1 all bones, >=0 one bone
     private float walkTime;
-    private com.badlogic.gdx.utils.Array<Poses.Pose> poses;
+    private int weightBone = -2; // -2 off, -1 all bones, >=0 one bone
+    private Array<Poses.Pose> poses;
+    private String rigSummary = "";
 
+    private Theme theme;
+    private Hud hud;
     private Stage stage;
-    private VisLabel infoLabel, statusLabel, stepsLabel;
-    private VisTable root, bar;
     private float density = 1f;
+    private final Rectangle view = new Rectangle();
+    private boolean framedForView;
 
     private final BoundingBox box = new BoundingBox();
     private final Matrix4 tmpM = new Matrix4();
     private final Vector3 tmpV = new Vector3(), tmpV2 = new Vector3();
+
+    private static final class Pose {
+        Poses.Pose pose;
+    }
 
     public Main() {
         this(Platform.NONE);
@@ -155,28 +159,26 @@ public class Main extends ApplicationAdapter {
         setScene(new Scene(new ModelInstance(mannequinModel)), "Mannequin", true);
 
         boolean android = Gdx.app.getType() == Application.ApplicationType.Android;
-        density = android ? Gdx.graphics.getDensity() : 1f;
-        boolean big = density >= 1.5f;
-        VisUI.load(big ? VisUI.SkinScale.X2 : VisUI.SkinScale.X1);
-        font = VisUI.getSkin().getFont("default-font");
-        float uiScale = Math.max(0.75f, density / (big ? 2f : 1f));
+        density = android ? Math.max(1f, Gdx.graphics.getDensity()) : Math.max(0.75f, devDensity);
+        theme = new Theme(density);
         ScreenViewport vp = new ScreenViewport();
-        vp.setUnitsPerPixel(1f / uiScale);
-        stage = new Stage(vp);
-        buildUi();
-        updateInfo();
+        vp.setUnitsPerPixel(1f / density);
+        stage = new Stage(vp, batch);
+        hud = new Hud(theme, stage);
+        applyInsets();
+        showOrient();
         setInput();
 
         platform.initialModel(new Platform.FileCallback() {
             @Override
             public void onPicked(String name, byte[] data) {
                 loadGlb(name, data);
-                if (devMarkers != null) devAutoRig();
+                if (devMarkers != null && modelBytes != null) devAutoRig();
             }
 
             @Override
             public void onError(String message) {
-                status(message);
+                hud.toast(message, true);
             }
         });
     }
@@ -190,7 +192,7 @@ public class Main extends ApplicationAdapter {
             mx.addProcessor(new MarkerInput());
             mx.addProcessor(new GestureDetector(ortho));
             mx.addProcessor(ortho);
-        } else {
+        } else if (step != Step.RIGGING) {
             mx.addProcessor(new GestureDetector(orbit));
             mx.addProcessor(orbit);
         }
@@ -202,14 +204,12 @@ public class Main extends ApplicationAdapter {
         @Override
         public boolean touchDown(int x, int y, int pointer, int button) {
             if (pointer > 0 || pipeline == null) return false;
-            float best = 40f * Math.max(1f, density);
+            float best = 36f * density;
             Markers.Kind found = null;
             boolean mir = false;
             for (Markers.Kind k : Markers.Kind.values()) {
                 for (int m = 0; m < (k.center ? 1 : 2); m++) {
-                    Vector3 p = pipeline.markers.get(k);
-                    tmpV.set(m == 0 ? p.x : -p.x, p.y, p.z);
-                    ortho.camera.project(tmpV);
+                    project(k, m == 1, tmpV);
                     float d = Vector3.dst(tmpV.x, Gdx.graphics.getHeight() - tmpV.y, 0, x, y, 0);
                     if (d < best) {
                         best = d;
@@ -220,11 +220,12 @@ public class Main extends ApplicationAdapter {
             }
             if (found == null) return false;
             dragging = found;
-            selected = found;
             dragMirror = mir;
-            boolean touch = Gdx.app.getType() == Application.ApplicationType.Android;
-            dragOffset = touch ? 64f * density : 0f;
-            describeMarker();
+            dragOffset = Gdx.app.getType() == Application.ApplicationType.Android ? 56f * density : 0f;
+            if (selected != found) {
+                selected = found;
+                showMarkers();
+            }
             moveMarker(x, y);
             return true;
         }
@@ -246,210 +247,170 @@ public class Main extends ApplicationAdapter {
 
     private void moveMarker(int sx, int sy) {
         tmpV.set(sx, sy - dragOffset, 0);
-        ortho.camera.unproject(tmpV);
+        ortho.camera.unproject(tmpV, view.x, view.y, view.width, view.height);
         Vector3 m = pipeline.markers.get(dragging);
         m.set(dragMirror ? -tmpV.x : tmpV.x, tmpV.y, 0);
         pipeline.markers.constrain(pipeline.mesh, dragging);
     }
 
-    // ------------------------------------------------------------------ UI
+    // ------------------------------------------------------------------ panels
 
-    private void buildUi() {
-        root = new VisTable();
-        root.setFillParent(true);
-        stage.addActor(root);
-
-        VisTable top = new VisTable();
-        top.setBackground(VisUI.getSkin().getDrawable("window-bg"));
-        VisLabel title = new VisLabel("MobiRig");
-        title.setColor(new Color(0.55f, 0.75f, 1f, 1f));
-        top.add(title).padRight(12);
-        stepsLabel = new VisLabel("");
-        top.add(stepsLabel).expandX().left();
-        root.add(top).growX().top().row();
-
-        infoLabel = new VisLabel("");
-        infoLabel.setWrap(true);
-        root.add(infoLabel).growX().left().pad(6).row();
-        statusLabel = new VisLabel("");
-        statusLabel.setWrap(true);
-        statusLabel.setColor(Color.LIGHT_GRAY);
-        root.add(statusLabel).growX().left().pad(0, 6, 0, 6).row();
-        root.add().expand().row();
-
-        bar = new VisTable(true);
-        bar.pad(6);
-        VisScrollPane scroll = new VisScrollPane(bar);
-        scroll.setScrollingDisabled(false, true);
-        scroll.setFadeScrollBars(true);
-        scroll.setOverscroll(true, false);
-        VisTable bottom = new VisTable();
-        bottom.setBackground(VisUI.getSkin().getDrawable("window-bg"));
-        bottom.add(scroll).growX();
-        root.add(bottom).growX().bottom();
-        applySafeInsets();
-        showStep(Step.ORIENT);
-    }
-
-    private void showStep(Step s) {
-        step = s;
-        bar.clearChildren();
-        switch (s) {
-            case ORIENT:
-                bar.add(button("Open GLB", this::openModel, false));
-                bar.add(button("Rot X", () -> rotate(Vector3.X), false));
-                bar.add(button("Rot Y", () -> rotate(Vector3.Y), false));
-                bar.add(button("Rot Z", () -> rotate(Vector3.Z), false));
-                bar.add(button("Flip", this::flipFacing, false));
-                bar.add(button("Mirror", this::mirror, false));
-                bar.add(button("Front", () -> orbit.view(0f, 0f), false));
-                bar.add(button("Side", () -> orbit.view(90f, 0f), false));
-                bar.add(button("Frame", this::frameModel, false));
-                bar.add(button("Reset", this::resetOrientation, false));
-                bar.add(button("Next: Markers", this::enterMarkers, true));
-                status("Make the character stand upright and face you, then tap Next. Drag: orbit, 2 fingers: pan/zoom, double tap: frame.");
-                break;
-            case MARKERS:
-                bar.add(button("Back", this::backToOrient, false));
-                for (final Markers.Kind k : Markers.Kind.values()) {
-                    bar.add(button(k.label, () -> {
-                        selected = k;
-                        describeMarker();
-                    }, false));
-                }
-                bar.add(button("Guess again", () -> {
-                    pipeline.guessMarkers();
-                    status("Markers guessed again from the shape. Check each one.");
-                }, false));
-                bar.add(button("Fit view", () -> ortho.reset(), false));
-                bar.add(button("Rig it", this::startRig, true));
-                describeMarker();
-                break;
-            case RIGGING:
-                bar.add(new VisLabel("Rigging..."));
-                break;
-            case TEST:
-                bar.add(button("Markers", this::backToMarkers, false));
-                bar.add(button("Walk", () -> {
-                    walking = true;
-                    pose = null;
-                }, false));
-                for (final Poses.Pose p : poses) {
-                    bar.add(button(p.name, () -> {
-                        walking = false;
-                        pose = p;
-                        applyPose(p);
-                    }, false));
-                }
-                bar.add(button("Bones", () -> showBones = !showBones, false));
-                bar.add(button("Weights", () -> setWeightView(weightBone == -2 ? -1 : -2), false));
-                bar.add(button("< Bone", () -> setWeightView(prevDeform(weightBone)), false));
-                bar.add(button("Bone >", () -> setWeightView(nextDeform(weightBone)), false));
-                bar.add(button("Export GLB", this::exportGlb, true));
-                break;
+    private void showOrient() {
+        step = Step.ORIENT;
+        Hud.Panel p = new Hud.Panel();
+        if (modelBytes == null) {
+            p.title = "Import a character";
+            p.hint = "Open a .glb model. Rigging runs fully offline on this device.";
+            p.primary = new Hud.Item(Theme.I_OPEN, "Open GLB", this::openModel);
+        } else {
+            p.title = "Orient the model";
+            p.hint = "Stand the character upright, facing you. Use Front to check.";
+            p.toolsTitle = "Turn & fix";
+            p.tools.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> rotate(Vector3.X)));
+            p.tools.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> rotate(Vector3.Y)));
+            p.tools.add(new Hud.Item(Theme.I_ROT_R, "Rotate Z", () -> rotate(Vector3.Z)));
+            p.tools.add(new Hud.Item(Theme.I_FLIP, "Face me", this::flipFacing));
+            p.tools.add(new Hud.Item(Theme.I_MIRROR, "Mirror", this::mirror).checked(() -> mirrored));
+            p.tools.add(new Hud.Item(Theme.I_PERSON, "Front", () -> orbit.view(0f, 0f)));
+            p.tools.add(new Hud.Item(Theme.I_SIDE, "Side", () -> orbit.view(90f, 0f)));
+            p.tools.add(new Hud.Item(Theme.I_FIT, "Frame", this::frameModel));
+            p.tools.add(new Hud.Item(Theme.I_RESET, "Reset", this::resetOrientation));
+            p.tools.add(new Hud.Item(Theme.I_OPEN, "Open", this::openModel));
+            p.primary = new Hud.Item(Theme.I_NEXT, "Next: markers", this::enterMarkers);
         }
-        updateSteps();
-        setInput();
+        hud.show(0, p);
+        updateInfo();
     }
 
-    private VisTextButton button(String text, final Runnable action, boolean primary) {
-        VisTextButton b = primary ? new VisTextButton(text, "blue") : new VisTextButton(text);
-        b.addListener(new ChangeListener() {
-            @Override
-            public void changed(ChangeEvent event, Actor actor) {
-                try {
-                    action.run();
-                } catch (RigException e) {
-                    status(e.getMessage());
-                }
-            }
-        });
-        b.pad(8, 14, 8, 14);
-        return b;
-    }
-
-    private void status(String s) {
-        if (statusLabel != null) statusLabel.setText(s);
-    }
-
-    private void updateSteps() {
-        if (stepsLabel == null) return;
-        int n = step == Step.ORIENT ? 1 : step == Step.MARKERS ? 2 : step == Step.RIGGING ? 3 : 4;
-        String[] names = {"Orient", "Markers", "Rig", "Test & Export"};
-        boolean compact = stage.getViewport().getWorldWidth() < 620;
-        if (compact) stepsLabel.setText("Step " + n + "/4  " + names[n - 1]);
-        else {
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < 4; i++) {
-                if (i > 0) sb.append("  >  ");
-                sb.append(i + 1 == n ? "[" + (i + 1) + " " + names[i] + "]" : (i + 1) + " " + names[i]);
-            }
-            stepsLabel.setText(sb);
+    private void showMarkers() {
+        Hud.Panel p = new Hud.Panel();
+        p.title = "Place the markers";
+        p.maxHeight = 0.44f;
+        p.hint = selected.label + ": " + selected.hint + ". Drag the dots onto the model; the right side mirrors automatically.";
+        p.chipsTitle = "Markers";
+        for (final Markers.Kind k : Markers.Kind.values()) {
+            p.chips.add(new Hud.Item(Theme.I_PERSON, k.label, () -> {
+                selected = k;
+                showMarkers();
+            }).dot(k.center ? theme.amber : theme.cyan).checked(() -> selected == k));
         }
+        p.toolsTitle = "Helpers";
+        p.tools.add(new Hud.Item(Theme.I_MAGIC, "Guess", () -> {
+            pipeline.guessMarkers();
+            hud.toast("Markers guessed from the shape. Check each one.", false);
+        }));
+        p.tools.add(new Hud.Item(Theme.I_FIT, "Fit view", ortho::reset));
+        p.secondary = new Hud.Item(Theme.I_BACK, "Back", this::backToOrient);
+        p.primary = new Hud.Item(Theme.I_SPARK, "Rig it", this::startRig);
+        hud.show(1, p);
     }
 
-    private void applySafeInsets() {
-        if (root == null) return;
-        float s = ((ScreenViewport) stage.getViewport()).getUnitsPerPixel();
-        root.pad(Gdx.graphics.getSafeInsetTop() * s, Gdx.graphics.getSafeInsetLeft() * s,
-            Gdx.graphics.getSafeInsetBottom() * s, Gdx.graphics.getSafeInsetRight() * s);
-    }
-
-    private void describeMarker() {
-        int done = selected.ordinal() + 1;
-        status("Drag the markers onto the joints (front view). Selected " + done + "/6: " + selected.label
-            + " = " + selected.hint + ". Yellow: centre line, blue: left side (mirrored).");
+    private void showTest() {
+        Hud.Panel p = new Hud.Panel();
+        p.title = "Test & export";
+        p.maxHeight = 0.5f;
+        p.hint = weightBone == -2 ? rigSummary : weightBone == -1
+            ? "Weights view: each colour is one bone; blends show where bones share the skin."
+            : "Weights of " + pipeline.skeleton.joints.get(weightBone).name + ": red 100%, blue 0%.";
+        p.chipsTitle = "Poses";
+        p.chips.add(new Hud.Item(Theme.I_WALK, "Walk", () -> {
+            walking = true;
+            currentPoseHolder.pose = null;
+            showTest();
+        }).checked(() -> walking));
+        for (final Poses.Pose ps : poses) {
+            char ic = ps.name.startsWith("Arms") ? Theme.I_TPOSE : ps.name.startsWith("Squat") || ps.name.startsWith("Kick")
+                ? Theme.I_RUN : ps.name.startsWith("Rest") ? Theme.I_PERSON : Theme.I_GYM;
+            p.chips.add(new Hud.Item(ic, ps.name, () -> {
+                walking = false;
+                currentPoseHolder.pose = ps;
+                applyPose(ps);
+                showTest();
+            }).checked(() -> !walking && currentPoseHolder.pose == ps));
+        }
+        p.toolsTitle = "View";
+        p.tools.add(new Hud.Item(Theme.I_BONES, "Bones", () -> {
+            showBones = !showBones;
+            showTest();
+        }).checked(() -> showBones));
+        p.tools.add(new Hud.Item(Theme.I_PALETTE, "Weights", () -> setWeightView(weightBone == -2 ? -1 : -2))
+            .checked(() -> weightBone != -2));
+        p.tools.add(new Hud.Item(Theme.I_PREV, "Prev bone", () -> setWeightView(prevDeform(weightBone))));
+        p.tools.add(new Hud.Item(Theme.I_NEXT_SMALL, "Next bone", () -> setWeightView(nextDeform(weightBone))));
+        p.secondary = new Hud.Item(Theme.I_BACK, "Markers", this::backToMarkers);
+        p.primary = new Hud.Item(Theme.I_SAVE, "Export GLB", this::exportGlb);
+        hud.show(3, p);
     }
 
     // ------------------------------------------------------------------ steps
 
     private void enterMarkers() {
         if (modelBytes == null) {
-            status("Open a GLB model first.");
+            hud.toast("Open a GLB model first.", true);
             return;
         }
-        if (pipeline == null || !pipeline.orient.equals(scene.modelInstance.transform)) {
-            status("Analysing mesh...");
-            pipeline = new RigPipeline(modelBytes, scene.modelInstance.transform);
-            pipeline.guessMarkers();
+        try {
+            if (pipeline == null || !pipeline.orient.equals(scene.modelInstance.transform)) {
+                pipeline = new RigPipeline(modelBytes, scene.modelInstance.transform);
+                pipeline.guessMarkers();
+            }
+        } catch (RuntimeException e) {
+            Gdx.app.error("MobiRig", "analyse failed", e);
+            hud.toast("This model can't be rigged: " + e.getMessage(), true);
+            return;
         }
+        step = Step.MARKERS;
+        selected = Markers.Kind.CHIN;
+        framedForView = false;
+        sceneManager.setCamera(ortho.camera);
+        showMarkers();
+        setInput();
+    }
+
+    private void frameOrtho() {
         ModelInstance mi = scene.modelInstance;
         mi.calculateBoundingBox(box);
         box.mul(mi.transform);
-        ortho.frame(box, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
-        sceneManager.setCamera(ortho.camera);
-        selected = Markers.Kind.CHIN;
-        showStep(Step.MARKERS);
+        ortho.frame(box, (int) view.width, (int) view.height);
     }
 
     private void backToOrient() {
         sceneManager.setCamera(camera);
-        showStep(Step.ORIENT);
+        showOrient();
+        setInput();
     }
 
     private void backToMarkers() {
-        // show the original model again
         loadScene(modelName, modelBytes, false);
         scene.modelInstance.transform.set(pipeline.orient);
+        weightBone = -2;
         enterMarkers();
     }
 
     private void startRig() {
         if (pipeline == null) return;
-        showStep(Step.RIGGING);
+        step = Step.RIGGING;
+        setInput();
         final boolean android = Gdx.app.getType() == Application.ApplicationType.Android;
         final int res = android ? 96 : 128;
-        progressText = "Starting...";
+        progressText = "Starting";
+        progressF = 0;
+        hud.progress("Rigging your character", "Starting...", 0);
         new Thread(() -> {
             try {
-                pipeline.rig(res, (stage1, f) -> progressText = String.format("%s... %d%%", stage1, Math.round(f * 100)));
+                pipeline.rig(res, (st, f) -> {
+                    progressText = st;
+                    progressF = f;
+                });
                 Gdx.app.postRunnable(this::rigDone);
-            } catch (final Throwable t) {
-                Gdx.app.error("MobiRig", "rig failed", t);
+            } catch (final Throwable e) {
+                Gdx.app.error("MobiRig", "rig failed", e);
                 Gdx.app.postRunnable(() -> {
                     progressText = null;
-                    showStep(Step.MARKERS);
-                    status("Rigging failed: " + t.getMessage());
+                    hud.hideProgress();
+                    step = Step.MARKERS;
+                    setInput();
+                    hud.toast("Rigging failed: " + e.getMessage(), true);
                 });
             }
         }, "rigger").start();
@@ -457,6 +418,7 @@ public class Main extends ApplicationAdapter {
 
     private void rigDone() {
         progressText = null;
+        hud.hideProgress();
         loadScene(modelName, pipeline.output, true);
         Skeleton sk = pipeline.skeleton;
         weightBone = -2;
@@ -465,14 +427,24 @@ public class Main extends ApplicationAdapter {
         sceneManager.setCamera(camera);
         frameModel();
         orbit.view(25f, 10f);
-        pose = null;
+        currentPoseHolder.pose = null;
         walking = false;
-        showStep(Step.TEST);
-        StringBuilder sb = new StringBuilder();
-        sb.append(String.format("Rigged in %.1f s. ", (pipeline.fitMs + pipeline.bindMs + pipeline.exportMs + pipeline.qualityMs) / 1000f));
-        sb.append(pipeline.quality.summary());
-        for (String n : pipeline.notes) sb.append(" ").append(n);
-        status(sb.toString());
+        float secs = (pipeline.fitMs + pipeline.bindMs + pipeline.exportMs + pipeline.qualityMs) / 1000f;
+        float worst = 0;
+        String worstName = "-";
+        for (com.star4droid.mobirig.rig.Quality.PoseScore s : pipeline.quality.poses) {
+            if (s.badEdgePct + s.collapsedTriPct > worst) {
+                worst = s.badEdgePct + s.collapsedTriPct;
+                worstName = s.pose;
+            }
+        }
+        rigSummary = String.format(java.util.Locale.US, "Rigged in %.1f s with %d bones. Weight leaks %.2f%%, unweighted %d. Hardest pose: %s.",
+            secs, sk.joints.size, pipeline.quality.bleedPct, pipeline.quality.unweightedVertices, worstName);
+        for (String n : pipeline.notes) rigSummary += " " + n;
+        step = Step.TEST;
+        showTest();
+        setInput();
+        updateInfo();
         if (devView != null && !devView.isEmpty()) {
             String[] v = devView.split(",");
             float hgt = box.getHeight();
@@ -486,16 +458,17 @@ public class Main extends ApplicationAdapter {
         if (devPose != null && devPose.startsWith("Weights")) {
             String[] parts = devPose.split(":");
             String[] sub = parts.length > 1 ? parts[1].split("@") : new String[0];
-            if (sub.length > 1) for (Poses.Pose p : poses) if (p.name.equals(sub[1])) pose = p;
+            if (sub.length > 1) for (Poses.Pose p : poses) if (p.name.equals(sub[1])) currentPoseHolder.pose = p;
             setWeightView(sub.length > 0 && !sub[0].isEmpty() ? sk.index(sub[0]) : -1);
             return;
         }
         if (devPose != null) {
             if (devPose.equals("Walk")) walking = true;
             else for (Poses.Pose p : poses) if (p.name.equals(devPose)) {
-                pose = p;
+                currentPoseHolder.pose = p;
                 applyPose(p);
             }
+            showTest();
         }
     }
 
@@ -518,12 +491,12 @@ public class Main extends ApplicationAdapter {
         return -1;
     }
 
-    /** Shows the model coloured by weights (one bone as a heat map, or all bones), keeping the pose. */
+    /** Shows the model coloured by weights (one bone as a heat map, or all bones), keeping pose and camera. */
     private void setWeightView(int bone) {
         weightBone = bone;
-        byte[] bytes = bone == -2 ? pipeline.output : new com.star4droid.mobirig.rig.GlbExporter().export(
+        byte[] bytes = bone == -2 ? pipeline.output : new GlbExporter().export(
             pipeline.source, pipeline.mesh, pipeline.skeleton, pipeline.joints, pipeline.weights,
-            com.star4droid.mobirig.rig.GlbExporter.weightColors(pipeline.mesh, pipeline.skeleton, pipeline.joints, pipeline.weights, bone));
+            GlbExporter.weightColors(pipeline.mesh, pipeline.skeleton, pipeline.joints, pipeline.weights, bone));
         Vector3 tgt = new Vector3(orbit.target);
         float yaw = orbit.yaw, pitch = orbit.pitch, dist = orbit.distance;
         loadScene(modelName, bytes, true);
@@ -533,18 +506,15 @@ public class Main extends ApplicationAdapter {
         orbit.distance = dist;
         orbit.update();
         bindJointNodes();
-        if (pose != null) applyPose(pose);
-        status(bone == -2 ? "Normal view." : bone == -1 ? "Weights: every colour is one bone; blends show shared areas."
-            : "Weights of " + pipeline.skeleton.joints.get(bone).name + ": red = 100%, blue = 0%.");
+        if (currentPoseHolder.pose != null) applyPose(currentPoseHolder.pose);
+        showTest();
     }
 
     private void bindJointNodes() {
         Skeleton sk = pipeline.skeleton;
         jointNodes = new Node[sk.joints.size];
-        restRot = new Quaternion[sk.joints.size];
         for (int j = 0; j < sk.joints.size; j++) {
             jointNodes[j] = scene.modelInstance.getNode("mixamorig:" + sk.joints.get(j).name, true);
-            restRot[j] = jointNodes[j] == null ? new Quaternion() : new Quaternion(jointNodes[j].rotation);
         }
     }
 
@@ -559,17 +529,19 @@ public class Main extends ApplicationAdapter {
         platform.saveFile(base + "_rigged.glb", pipeline.output, new Platform.SaveCallback() {
             @Override
             public void onSaved(String where) {
-                status("Saved " + where + " (" + pipeline.output.length / 1024 + " KB, Mixamo skeleton).");
+                hud.toast("Saved " + where + " (" + pipeline.output.length / 1024 + " KB, Mixamo skeleton).", false);
             }
 
             @Override
             public void onError(String message) {
-                status(message);
+                hud.toast(message, !message.equals("Not saved"));
             }
         });
     }
 
     private void devAutoRig() {
+        // the viewport must exist before markers are framed
+        view.set(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
         enterMarkers();
         if (!devMarkers.equals("guess")) {
             JsonValue mj = new JsonReader().parse(Gdx.files.absolute(devMarkers).readString("UTF-8"));
@@ -586,7 +558,6 @@ public class Main extends ApplicationAdapter {
     // ------------------------------------------------------------------ model
 
     private void openModel() {
-        status("Opening file picker...");
         platform.pickModel(new Platform.FileCallback() {
             @Override
             public void onPicked(String name, byte[] data) {
@@ -595,23 +566,54 @@ public class Main extends ApplicationAdapter {
 
             @Override
             public void onError(String message) {
-                status(message);
+                hud.toast(message, !message.equals("No file chosen"));
             }
         });
     }
 
     private void loadGlb(String name, byte[] data) {
+        if (step != Step.ORIENT) {
+            sceneManager.setCamera(camera);
+            step = Step.ORIENT;
+        }
         if (loadScene(name, data, false)) {
             modelBytes = data;
             pipeline = null;
-            status("Loaded " + name + " (" + (data.length / 1024) + " KB). Make it face you, then tap Next.");
+            showOrient();
+            setInput();
+            hud.toast("Loaded " + name + " (" + (data.length / 1024) + " KB).", false);
+        }
+    }
+
+    /** An existing rig with more bones than the shader supports is hidden in the preview (it is replaced anyway). */
+    private static byte[] displayBytes(byte[] data) {
+        try {
+            com.star4droid.mobirig.rig.GlbFile g = com.star4droid.mobirig.rig.GlbFile.parse(data);
+            JsonValue skins = g.json.get("skins");
+            boolean tooMany = false;
+            if (skins != null) for (JsonValue sk = skins.child; sk != null; sk = sk.next) {
+                if (sk.get("joints") != null && sk.get("joints").size > MAX_BONES) tooMany = true;
+            }
+            if (!tooMany) return data;
+            for (JsonValue n = g.json.get("nodes").child; n != null; n = n.next) n.remove("skin");
+            for (JsonValue m = g.json.get("meshes").child; m != null; m = m.next) {
+                for (JsonValue pr = m.get("primitives").child; pr != null; pr = pr.next) {
+                    JsonValue a = pr.get("attributes");
+                    for (String k : new String[]{"JOINTS_0", "WEIGHTS_0", "JOINTS_1", "WEIGHTS_1"}) a.remove(k);
+                }
+            }
+            g.json.remove("skins");
+            g.json.remove("animations");
+            return g.write();
+        } catch (RuntimeException e) {
+            return data;
         }
     }
 
     private boolean loadScene(String name, byte[] data, boolean rigged) {
         try {
             FileHandle f = Gdx.files.local(rigged ? "import/rigged.glb" : "import/current.glb");
-            f.writeBytes(data, false);
+            f.writeBytes(rigged ? data : displayBytes(data), false);
             SceneAsset loaded = new GLBLoader().load(f);
             SceneAsset old = asset;
             asset = loaded;
@@ -620,7 +622,7 @@ public class Main extends ApplicationAdapter {
             return true;
         } catch (Throwable t) {
             Gdx.app.error("MobiRig", "GLB load failed", t);
-            status("Could not load " + name + ": " + t.getMessage());
+            hud.toast("Could not open " + name + ": " + t.getMessage(), true);
             return false;
         }
     }
@@ -655,6 +657,7 @@ public class Main extends ApplicationAdapter {
             else m.remove(IntAttribute.CullFace);
         }
         dropToFloor();
+        if (step == Step.ORIENT) showOrient();
     }
 
     private void resetOrientation() {
@@ -682,20 +685,15 @@ public class Main extends ApplicationAdapter {
     }
 
     private void updateInfo() {
-        if (infoLabel == null || scene == null) return;
-        int verts = 0, tris = 0;
-        for (Mesh m : scene.modelInstance.model.meshes) {
-            verts += m.getNumVertices();
-            int idx = m.getNumIndices();
-            tris += (idx > 0 ? idx : m.getNumVertices()) / 3;
-        }
+        if (hud == null || scene == null) return;
+        int verts = 0;
+        for (Mesh m : scene.modelInstance.model.meshes) verts += m.getNumVertices();
         int bones = countBones(scene.modelInstance.nodes, 0);
         ModelInstance mi = scene.modelInstance;
         mi.calculateBoundingBox(box);
         box.mul(mi.transform);
-        infoLabel.setText(String.format("%s   |   %,d verts   %,d tris   |   rig: %s   |   height %.2f%s",
-            modelName, verts, tris, bones > 0 ? bones + " bones" : "none",
-            box.getHeight(), mirrored ? "   |   mirrored" : ""));
+        hud.setInfo(String.format(java.util.Locale.US, "%s  •  %,d verts  •  %s  •  %.2f m", modelName, verts,
+            bones > 0 ? bones + " bones" : "no rig", box.getHeight()));
     }
 
     private int countBones(Iterable<Node> nodes, int max) {
@@ -710,45 +708,69 @@ public class Main extends ApplicationAdapter {
 
     // ------------------------------------------------------------------ loop
 
+    private void applyInsets() {
+        hud.setInsets(Gdx.graphics.getSafeInsetTop() / density, Gdx.graphics.getSafeInsetBottom() / density,
+            Gdx.graphics.getSafeInsetLeft() / density, Gdx.graphics.getSafeInsetRight() / density);
+    }
+
     @Override
     public void resize(int width, int height) {
-        sceneManager.updateViewport(width, height);
-        ortho.resize(width, height);
         stage.getViewport().update(width, height, true);
-        applySafeInsets();
-        updateSteps();
+        applyInsets();
+        hud.rebuild();
+        framedForView = false;
     }
 
     @Override
     public void render() {
-        float dt = Gdx.graphics.getDeltaTime();
+        float dt = Math.min(Gdx.graphics.getDeltaTime(), 0.1f);
         if (step == Step.TEST && walking && jointNodes != null) {
             walkTime += dt;
             applyPose(Poses.walk(pipeline.skeleton, walkTime));
         }
-        if (step == Step.RIGGING && progressText != null) status(progressText);
-        ScreenUtils.clear(0.11f, 0.12f, 0.14f, 1f, true);
-        Camera cam = step == Step.MARKERS ? ortho.camera : camera;
+        if (step == Step.RIGGING && progressText != null) {
+            hud.progress("Rigging your character", progressText + "  " + Math.round(progressF * 100) + "%", progressF);
+        }
+        stage.act(dt);
+
+        hud.viewRect(view);
+        ScreenUtils.clear(theme.bg.r, theme.bg.g, theme.bg.b, 1f, true);
+        HdpiUtils.glViewport((int) view.x, (int) view.y, (int) view.width, (int) view.height);
+        Camera cam;
+        if (step == Step.MARKERS) {
+            if (!framedForView) {
+                frameOrtho();
+                framedForView = true;
+            } else ortho.resize((int) view.width, (int) view.height);
+            cam = ortho.camera;
+        } else {
+            camera.viewportWidth = view.width;
+            camera.viewportHeight = view.height;
+            camera.update();
+            cam = camera;
+        }
         drawGrid(cam);
         sceneManager.update(dt);
         sceneManager.render();
+        if (step == Step.TEST && showBones && jointNodes != null && weightBone == -2) drawBones();
+        HdpiUtils.glViewport(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
         if (step == Step.MARKERS && pipeline != null) drawMarkers();
-        if (step == Step.TEST && showBones && jointNodes != null) drawBones();
-        stage.act(dt);
         stage.draw();
     }
 
     private void drawGrid(Camera cam) {
         Gdx.gl.glEnable(GL20.GL_DEPTH_TEST);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
         shapes.setProjectionMatrix(cam.combined);
         shapes.begin(ShapeRenderer.ShapeType.Line);
-        float step2 = 0.25f;
+        float st = 0.25f;
         int n = 12;
         for (int i = -n; i <= n; i++) {
-            float c = i * step2;
-            shapes.setColor(i == 0 ? 0.35f : 0.22f, i == 0 ? 0.35f : 0.23f, i == 0 ? 0.40f : 0.26f, 1f);
-            shapes.line(c, 0f, -n * step2, c, 0f, n * step2);
-            shapes.line(-n * step2, 0f, c, n * step2, 0f, c);
+            float c = i * st;
+            float a = i == 0 ? 0.5f : 0.22f;
+            shapes.setColor(0.45f, 0.48f, 0.6f, a);
+            shapes.line(c, 0f, -n * st, c, 0f, n * st);
+            shapes.line(-n * st, 0f, c, n * st, 0f, c);
         }
         shapes.end();
     }
@@ -759,11 +781,9 @@ public class Main extends ApplicationAdapter {
         int w = Gdx.graphics.getWidth(), h = Gdx.graphics.getHeight();
         tmpM.setToOrtho2D(0, 0, w, h);
         shapes.setProjectionMatrix(tmpM);
-        float r = 9f * Math.max(1f, density);
-        Color center = new Color(1f, 0.82f, 0.2f, 1f), left = new Color(0.35f, 0.7f, 1f, 1f);
-        // guide lines between markers
+        float r = 9f * density;
         shapes.begin(ShapeRenderer.ShapeType.Line);
-        shapes.setColor(1, 1, 1, 0.35f);
+        shapes.setColor(1, 1, 1, 0.3f);
         line2d(Markers.Kind.CHIN, false, Markers.Kind.NECK, false);
         line2d(Markers.Kind.NECK, false, Markers.Kind.PELVIS, false);
         line2d(Markers.Kind.NECK, false, Markers.Kind.SHOULDER, false);
@@ -777,32 +797,41 @@ public class Main extends ApplicationAdapter {
         for (Markers.Kind k : Markers.Kind.values()) {
             for (int m = 0; m < (k.center ? 1 : 2); m++) {
                 project(k, m == 1, tmpV);
-                Color c = k.center ? center : left;
-                float rr = k == selected ? r * 1.35f : r;
-                shapes.setColor(0, 0, 0, 0.6f);
-                shapes.circle(tmpV.x, tmpV.y, rr + 2.5f, 20);
-                shapes.setColor(c.r, c.g, c.b, m == 1 ? 0.45f : 1f);
-                shapes.circle(tmpV.x, tmpV.y, rr, 20);
+                Color c = k.center ? theme.amber : theme.cyan;
+                boolean sel = k == selected;
+                float rr = sel ? r * 1.3f : r;
+                if (sel && m == 0) {
+                    shapes.setColor(c.r, c.g, c.b, 0.25f);
+                    shapes.circle(tmpV.x, tmpV.y, rr * 2.1f, 32);
+                }
+                shapes.setColor(0.05f, 0.06f, 0.08f, 0.85f);
+                shapes.circle(tmpV.x, tmpV.y, rr + 2.5f * density, 24);
+                shapes.setColor(c.r, c.g, c.b, m == 1 ? 0.5f : 1f);
+                shapes.circle(tmpV.x, tmpV.y, rr, 24);
             }
         }
         shapes.end();
-        batch.getProjectionMatrix().set(tmpM);
+        // labels in dp space (crisp font)
+        batch.getProjectionMatrix().setToOrtho2D(0, 0, w / density, h / density);
         batch.begin();
-        font.getData().setScale(Math.max(1f, density * 0.6f));
         for (Markers.Kind k : Markers.Kind.values()) {
             project(k, false, tmpV);
-            font.setColor(k == selected ? Color.WHITE : Color.LIGHT_GRAY);
-            font.draw(batch, k.label, tmpV.x + r * 1.8f, tmpV.y + r * 0.6f);
+            boolean sel = k == selected;
+            com.badlogic.gdx.graphics.g2d.BitmapFont f = sel ? theme.smallBold : theme.small;
+            f.setColor(sel ? theme.text : theme.textDim);
+            // centre markers alternate sides so close markers (chin/neck) never overlap
+            boolean leftSide = k == Markers.Kind.CHIN || k == Markers.Kind.PELVIS;
+            float x = tmpV.x / density, y = tmpV.y / density + 5;
+            if (leftSide) f.draw(batch, k.label, x - 16, y, 0, com.badlogic.gdx.utils.Align.right, false);
+            else f.draw(batch, k.label, x + 16, y);
         }
         batch.end();
-        font.getData().setScale(1f);
-        font.setColor(Color.WHITE);
     }
 
     private void project(Markers.Kind k, boolean mirror, Vector3 out) {
         Vector3 p = pipeline.markers.get(k);
         out.set(mirror ? -p.x : p.x, p.y, p.z);
-        ortho.camera.project(out);
+        ortho.camera.project(out, view.x, view.y, view.width, view.height);
     }
 
     private void line2d(Markers.Kind a, boolean ma, Markers.Kind b, boolean mb) {
@@ -822,7 +851,7 @@ public class Main extends ApplicationAdapter {
             jointNodes[j].globalTransform.getTranslation(tmpV).mul(scene.modelInstance.transform);
             jointNodes[p].globalTransform.getTranslation(tmpV2).mul(scene.modelInstance.transform);
             int side = sk.joints.get(j).side;
-            shapes.setColor(side > 0 ? 0.35f : side < 0 ? 1f : 1f, side > 0 ? 0.7f : side < 0 ? 0.45f : 0.85f, side > 0 ? 1f : side < 0 ? 0.4f : 0.3f, 1f);
+            shapes.setColor(side > 0 ? theme.cyan : side < 0 ? theme.danger : theme.amber);
             shapes.line(tmpV2, tmpV);
         }
         shapes.end();
@@ -837,8 +866,8 @@ public class Main extends ApplicationAdapter {
         specularCubemap.dispose();
         brdfLUT.dispose();
         shapes.dispose();
-        batch.dispose();
         stage.dispose();
-        VisUI.dispose();
+        batch.dispose();
+        theme.dispose();
     }
 }

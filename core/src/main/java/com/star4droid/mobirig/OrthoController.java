@@ -11,6 +11,7 @@ import com.badlogic.gdx.math.collision.BoundingBox;
 public class OrthoController extends InputAdapter implements GestureDetector.GestureListener {
     public final OrthographicCamera camera = new OrthographicCamera();
     private float frameH = 2f, cx, cy, frontZ = 5f;
+    private int pixelH = 1;
     private boolean pinching;
     private final Vector2 lastMid = new Vector2();
     private float lastDist;
@@ -27,6 +28,7 @@ public class OrthoController extends InputAdapter implements GestureDetector.Ges
     }
 
     public void resize(int w, int h) {
+        pixelH = Math.max(1, h);
         float aspect = w / (float) Math.max(1, h);
         // fit the height on landscape screens and the width on narrow portrait screens
         float vh = frameH;
@@ -100,7 +102,7 @@ public class OrthoController extends InputAdapter implements GestureDetector.Ges
     @Override
     public boolean pan(float x, float y, float dx, float dy) {
         if (pinching) return true;
-        pan(dx, dy, com.badlogic.gdx.Gdx.graphics.getHeight());
+        pan(dx, dy, pixelH);
         return true;
     }
 
@@ -119,7 +121,7 @@ public class OrthoController extends InputAdapter implements GestureDetector.Ges
         float midX = (p1.x + p2.x) * 0.5f, midY = (p1.y + p2.y) * 0.5f, d = p1.dst(p2);
         if (pinching && lastDist > 1f && d > 1f) {
             camera.zoom = MathUtils.clamp(camera.zoom * lastDist / d, 0.05f, 4f);
-            pan(midX - lastMid.x, midY - lastMid.y, com.badlogic.gdx.Gdx.graphics.getHeight());
+            pan(midX - lastMid.x, midY - lastMid.y, pixelH);
         }
         pinching = true;
         lastMid.set(midX, midY);
