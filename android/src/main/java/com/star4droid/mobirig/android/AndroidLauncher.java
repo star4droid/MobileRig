@@ -17,8 +17,10 @@ import java.io.InputStream;
 
 /** Launches the Android application. Files are opened with the Storage Access Framework (no permissions). */
 public class AndroidLauncher extends AndroidApplication implements Platform {
-    private static final int PICK_MODEL = 4101;
+    private static final int PICK_MODEL = 4101, SAVE_MODEL = 4102;
     private FileCallback pending;
+    private SaveCallback pendingSave;
+    private byte[] pendingData;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,8 +49,51 @@ public class AndroidLauncher extends AndroidApplication implements Platform {
     }
 
     @Override
+    public void saveFile(String suggestedName, byte[] data, SaveCallback callback) {
+        pendingSave = callback;
+        pendingData = data;
+        runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("model/gltf-binary");
+            i.putExtra(Intent.EXTRA_TITLE, suggestedName);
+            try {
+                startActivityForResult(i, SAVE_MODEL);
+            } catch (Exception e) {
+                final SaveCallback cb = pendingSave;
+                Gdx.app.postRunnable(() -> cb.onError("No file saver available: " + e.getMessage()));
+            }
+        });
+    }
+
+    private void finishSave(int resultCode, Intent data) {
+        final SaveCallback cb = pendingSave;
+        final byte[] bytes = pendingData;
+        pendingData = null;
+        if (cb == null) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            Gdx.app.postRunnable(() -> cb.onError("Not saved"));
+            return;
+        }
+        final Uri uri = data.getData();
+        new Thread(() -> {
+            try (java.io.OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                out.write(bytes);
+                final String name = displayName(uri);
+                Gdx.app.postRunnable(() -> cb.onSaved(name));
+            } catch (Exception e) {
+                Gdx.app.postRunnable(() -> cb.onError("Could not save: " + e.getMessage()));
+            }
+        }, "glb-writer").start();
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == SAVE_MODEL) {
+            finishSave(resultCode, data);
+            return;
+        }
         if (requestCode != PICK_MODEL) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             deliverError("No file chosen");

@@ -25,7 +25,11 @@ public class Lwjgl3Launcher {
     }
 
     private static Lwjgl3Application createApplication(String startFile) {
-        return new Lwjgl3Application(new Main(new DesktopPlatform(startFile)), getDefaultConfiguration());
+        Main main = new Main(new DesktopPlatform(startFile));
+        main.devMarkers = System.getProperty("mobirig.markers");   // markers json or "guess": rig automatically
+        main.devPose = System.getProperty("mobirig.pose");         // pose to show after rigging
+        main.devView = System.getProperty("mobirig.view");         // yaw,pitch,dist,targetY (factors of height)
+        return new Lwjgl3Application(main, getDefaultConfiguration());
     }
 
     private static Lwjgl3ApplicationConfiguration getDefaultConfiguration() {

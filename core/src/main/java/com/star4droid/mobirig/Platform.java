@@ -13,6 +13,16 @@ public interface Platform {
     /** Opens the system file picker for a .glb model. */
     void pickModel(FileCallback callback);
 
+    /** Receives the result of a save. Always called on the render thread. */
+    interface SaveCallback {
+        void onSaved(String where);
+
+        void onError(String message);
+    }
+
+    /** Lets the user choose where to save the file, then writes it. */
+    void saveFile(String suggestedName, byte[] data, SaveCallback callback);
+
     /** Optional model to open at start-up (desktop: first command-line argument). */
     default void initialModel(FileCallback callback) {
     }
@@ -22,6 +32,11 @@ public interface Platform {
         @Override
         public void pickModel(FileCallback callback) {
             callback.onError("File picking is not available on this platform");
+        }
+
+        @Override
+        public void saveFile(String suggestedName, byte[] data, SaveCallback callback) {
+            callback.onError("Saving is not available on this platform");
         }
     };
 }

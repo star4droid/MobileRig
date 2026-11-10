@@ -23,6 +23,34 @@ public class DesktopPlatform implements Platform {
         else callback.onError("File not found: " + startFile);
     }
     @Override
+    public void saveFile(final String suggestedName, final byte[] data, final SaveCallback callback) {
+        new Thread(() -> {
+            String path;
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                PointerBuffer filters = stack.mallocPointer(1);
+                filters.put(stack.UTF8("*.glb"));
+                filters.flip();
+                path = TinyFileDialogs.tinyfd_saveFileDialog("Save rigged GLB", suggestedName, filters, "GLB model (*.glb)");
+            } catch (Throwable t) {
+                final String msg = "Save dialog failed: " + t.getMessage();
+                Gdx.app.postRunnable(() -> callback.onError(msg));
+                return;
+            }
+            if (path == null) {
+                Gdx.app.postRunnable(() -> callback.onError("Not saved"));
+                return;
+            }
+            final String p = path.toLowerCase().endsWith(".glb") ? path : path + ".glb";
+            try {
+                Gdx.files.absolute(p).writeBytes(data, false);
+                Gdx.app.postRunnable(() -> callback.onSaved(p));
+            } catch (Exception e) {
+                Gdx.app.postRunnable(() -> callback.onError("Could not save: " + e.getMessage()));
+            }
+        }, "save-dialog").start();
+    }
+
+    @Override
     public void pickModel(final FileCallback callback) {
         new Thread(() -> {
             String path;

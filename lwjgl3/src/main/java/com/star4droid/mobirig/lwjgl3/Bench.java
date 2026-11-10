@@ -1,0 +1,152 @@
+package com.star4droid.mobirig.lwjgl3;
+
+import com.badlogic.gdx.math.Matrix4;
+import com.badlogic.gdx.math.Quaternion;
+import com.badlogic.gdx.math.Vector3;
+import com.badlogic.gdx.utils.JsonReader;
+import com.badlogic.gdx.utils.JsonValue;
+import com.star4droid.mobirig.rig.GlbFile;
+import com.star4droid.mobirig.rig.Markers;
+import com.star4droid.mobirig.rig.Quality;
+import com.star4droid.mobirig.rig.RigMesh;
+import com.star4droid.mobirig.rig.RigPipeline;
+import com.star4droid.mobirig.rig.Skeleton;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.util.Locale;
+
+/**
+ * Headless benchmark.
+ *   rig:     Bench rig <in.glb> <markers.json> <out.glb> [resolution]
+ *   measure: Bench measure <rigged.glb>      (quality of any Mixamo-named rig, e.g. Blender's)
+ * markers.json: {"chin":[x,y,z], "neck":..., "shoulder":..., "wrist":..., "pelvis":..., "ankle":...} (glTF axes)
+ */
+public class Bench {
+    public static void main(String[] args) throws Exception {
+        Locale.setDefault(Locale.US);
+        if (args[0].equals("rig")) rig(args);
+        else measure(args[1]);
+    }
+
+    static void rig(String[] args) throws Exception {
+        byte[] src = Files.readAllBytes(new File(args[1]).toPath());
+        int res = args.length > 4 ? Integer.parseInt(args[4]) : 112;
+        if (System.getProperty("debug") != null) {
+            String[] d = System.getProperty("debug").split(",");
+            com.star4droid.mobirig.rig.VoxelBinder.debugPoint = new float[]{Float.parseFloat(d[0]), Float.parseFloat(d[1]), Float.parseFloat(d[2])};
+        }
+        long t0 = System.currentTimeMillis();
+        RigPipeline p = new RigPipeline(src, new Matrix4());
+        long tLoad = System.currentTimeMillis() - t0;
+        if (args[2].equals("guess")) p.guessMarkers();
+        else {
+            JsonValue mj = new JsonReader().parse(new String(Files.readAllBytes(new File(args[2]).toPath()), "UTF-8"));
+            Markers m = new Markers();
+            for (Markers.Kind k : Markers.Kind.values()) {
+                float[] v = mj.get(k.name().toLowerCase()).asFloatArray();
+                m.get(k).set(v[0], v[1], v[2]);
+            }
+            m.constrainAll(p.mesh);
+            p.markers = m;
+        }
+        for (Markers.Kind k : Markers.Kind.values()) System.out.println("MARKER " + k + " " + p.markers.get(k));
+        p.rig(res, null);
+        Files.write(new File(args[3]).toPath(), p.output);
+        // skeleton dump for the Blender baseline
+        StringBuilder sb = new StringBuilder("{");
+        for (int j = 0; j < p.skeleton.joints.size; j++) {
+            Skeleton.Joint jt = p.skeleton.joints.get(j);
+            Vector3 tail = jt.tail.isZero() ? jt.pos : jt.tail;
+            sb.append(String.format("\"%s\":{\"head\":[%f,%f,%f],\"tail\":[%f,%f,%f],\"parent\":\"%s\",\"deform\":%b}%s",
+                jt.name, jt.pos.x, jt.pos.y, jt.pos.z, tail.x, tail.y, tail.z,
+                jt.parent < 0 ? "" : p.skeleton.joints.get(jt.parent).name, jt.deform, j + 1 < p.skeleton.joints.size ? "," : ""));
+        }
+        sb.append("}");
+        Files.write(new File(args[3] + ".skeleton.json").toPath(), sb.toString().getBytes("UTF-8"));
+        System.out.printf("RESULT %s verts=%d tris=%d islands=%d load=%dms fit=%dms bind=%dms export=%dms quality=%dms%n",
+            new File(args[1]).getName(), p.mesh.vertexCount, p.mesh.triCount, p.mesh.islandCount, tLoad, p.fitMs, p.bindMs, p.exportMs, p.qualityMs);
+        for (String n : p.notes) System.out.println("NOTE " + n);
+        print(p.quality);
+    }
+
+    static void measure(String path) throws Exception {
+        byte[] src = Files.readAllBytes(new File(path).toPath());
+        GlbFile glb = GlbFile.parse(src);
+        RigMesh mesh = RigMesh.build(glb, new Matrix4());
+        JsonValue json = glb.json;
+        JsonValue nodes = json.get("nodes");
+        JsonValue skin = json.get("skins").get(0);
+        int[] jn = skin.get("joints").asIntArray();
+        // world matrices of all nodes
+        Matrix4[] g = new Matrix4[nodes.size];
+        for (int i = 0; i < nodes.size; i++) if (g[i] == null) globalOf(nodes, i, g);
+        Skeleton sk = Skeleton.mixamo();
+        int[] map = new int[jn.length];
+        for (int i = 0; i < jn.length; i++) {
+            String name = nodes.get(jn[i]).getString("name", "");
+            int c = name.lastIndexOf(':');
+            if (c >= 0) name = name.substring(c + 1);
+            if (name.startsWith("mixamorig_")) name = name.substring(10);
+            map[i] = sk.index(name);
+            if (map[i] >= 0) g[jn[i]].getTranslation(sk.joints.get(map[i]).pos);
+        }
+        sk.computeFrames();
+        int[] joints = new int[mesh.vertexCount * 4];
+        float[] weights = new float[mesh.vertexCount * 4];
+        for (RigMesh.Part part : mesh.parts) {
+            JsonValue attrs = json.get("meshes").get(part.mesh).get("primitives").get(part.prim).get("attributes");
+            float[] js = glb.readFloats(attrs.getInt("JOINTS_0"));
+            float[] ws = glb.readFloats(attrs.getInt("WEIGHTS_0"));
+            for (int v = 0; v < part.vertexCount; v++) {
+                for (int k = 0; k < 4; k++) {
+                    int o = (part.vertexOffset + v) * 4 + k;
+                    int src2 = map[(int) js[v * 4 + k]];
+                    joints[o] = Math.max(src2, 0);
+                    weights[o] = src2 >= 0 ? ws[v * 4 + k] : 0;
+                }
+            }
+        }
+        System.out.printf("RESULT %s verts=%d (measured existing rig)%n", new File(path).getName(), mesh.vertexCount);
+        print(Quality.measure(mesh, sk, joints, weights));
+    }
+
+    private static Matrix4 globalOf(JsonValue nodes, int i, Matrix4[] g) {
+        if (g[i] != null) return g[i];
+        int parent = -1;
+        for (int p = 0; p < nodes.size && parent < 0; p++) {
+            JsonValue ch = nodes.get(p).get("children");
+            if (ch != null) for (JsonValue c = ch.child; c != null; c = c.next) if (c.asInt() == i) parent = p;
+        }
+        JsonValue n = nodes.get(i);
+        Matrix4 local = new Matrix4();
+        if (n.has("matrix")) local.set(n.get("matrix").asFloatArray());
+        else {
+            Vector3 t = new Vector3(), s = new Vector3(1, 1, 1);
+            Quaternion q = new Quaternion();
+            if (n.has("translation")) { float[] a = n.get("translation").asFloatArray(); t.set(a[0], a[1], a[2]); }
+            if (n.has("rotation")) { float[] a = n.get("rotation").asFloatArray(); q.set(a[0], a[1], a[2], a[3]); }
+            if (n.has("scale")) { float[] a = n.get("scale").asFloatArray(); s.set(a[0], a[1], a[2]); }
+            local.set(t, q, s);
+        }
+        g[i] = parent < 0 ? local : new Matrix4(globalOf(nodes, parent, g)).mul(local);
+        return g[i];
+    }
+
+    static void print(Quality q) {
+        System.out.printf("WEIGHTS unweighted=%d bleed=%.2f%%%n", q.unweightedVertices, q.bleedPct);
+        q.bleedPairs.entrySet().stream().sorted((a, b) -> b.getValue() - a.getValue()).limit(6)
+            .forEach(e -> {
+                float[] w = q.bleedWhere.get(e.getKey());
+                System.out.printf("BLEED %s %d at (%.3f, %.3f, %.3f)%n", e.getKey(), e.getValue(), w[0] / w[3], w[1] / w[3], w[2] / w[3]);
+            });
+        float sumBad = 0, sumCol = 0;
+        for (Quality.PoseScore s : q.poses) {
+            System.out.printf("POSE %-13s badEdges=%6.2f%% collapsed=%6.2f%% maxStretch=%5.2f volume=%+6.2f%%%n",
+                s.pose, s.badEdgePct, s.collapsedTriPct, s.maxStretch, s.volumeChangePct);
+            sumBad += s.badEdgePct;
+            sumCol += s.collapsedTriPct;
+        }
+        System.out.printf("MEAN badEdges=%.3f%% collapsed=%.3f%%%n", sumBad / q.poses.size, sumCol / q.poses.size);
+    }
+}
