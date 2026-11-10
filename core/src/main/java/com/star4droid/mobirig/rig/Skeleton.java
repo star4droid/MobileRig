@@ -22,6 +22,8 @@ public class Skeleton {
         public Vector3 weightHead;
         /** Optional point the joint's Y axis aims at (instead of its first child). */
         public Vector3 aim;
+        /** Optional roll: the local Z axis is turned toward this direction (fingers: out of the palm). */
+        public Vector3 rollHint;
         /** Finger joints get their weights from the finger detector, not the voxel binder. */
         public boolean finger;
 
@@ -83,7 +85,8 @@ public class Skeleton {
                 continue;
             }
             y.set(target).sub(jt.pos).nor();
-            Vector3 hint = Math.abs(y.z) > 0.7f ? Vector3.Y : Vector3.Z;
+            Vector3 hint = jt.rollHint != null && Math.abs(jt.rollHint.dot(y)) < 0.95f ? jt.rollHint
+                : Math.abs(y.z) > 0.7f ? Vector3.Y : Vector3.Z;
             z.set(hint).mulAdd(y, -hint.dot(y)).nor();
             x.set(y).crs(z).nor();
             float[] v = m.val;

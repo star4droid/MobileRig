@@ -64,6 +64,8 @@ public class Hud {
         public String title = "", hint = "";
         public String chipsTitle, toolsTitle;
         public final Array<Item> chips = new Array<>(), tools = new Array<>();
+        /** Icon-only strip shown at the top of the 3D view (no labels). */
+        public final Array<Item> viewIcons = new Array<>();
         public Item primary, secondary;
         /** Largest share of the screen height the bottom sheet may take (phones in portrait). */
         public float maxHeight = 0.56f;
@@ -83,6 +85,7 @@ public class Hud {
     private Container<Actor> progressFill;
     private float progressValue;
     private Table sheet;
+    private Table iconRow;
     private boolean sideLayout;
     private Panel panel = new Panel();
     private int step;
@@ -158,15 +161,18 @@ public class Hud {
             chip.pad(5, 10, 5, 12);
             infoRow.add(chip).left().minWidth(0);
         }
+        iconRow = panel.viewIcons.size > 0 ? iconStrip() : null;
         if (sideLayout) {
             root.add(top).colspan(2).growX().height(TOP).row();
             Table left = new Table();
+            if (iconRow != null) left.add(iconRow).top().padTop(10).row();
             left.add(infoRow).left().top().pad(10, 12, 0, 12).minWidth(0).row();
             left.add().expand();
             root.add(left).grow().minWidth(0);
             root.add(sheet).width(sideWidth(w)).growY().padTop(4);
         } else {
             root.add(top).growX().height(TOP).row();
+            if (iconRow != null) root.add(iconRow).top().padTop(8).row();
             root.add(infoRow).left().top().pad(8, 12, 0, 12).minWidth(0).row();
             root.add().expand().row();
             root.add(sheet).growX();
@@ -178,6 +184,7 @@ public class Hud {
             scroll.updateVisualScroll();
         }
         sheet.setVisible(!sheetHidden);
+        if (iconRow != null) iconRow.setVisible(!sheetHidden);
         layoutToast();
         layoutProgress();
     }
@@ -186,6 +193,7 @@ public class Hud {
     public void setSheetHidden(boolean hidden) {
         sheetHidden = hidden;
         if (sheet != null) sheet.setVisible(!hidden);
+        if (iconRow != null) iconRow.setVisible(!hidden);
         if (hidden) toastBox.setVisible(false);
     }
 
@@ -320,6 +328,41 @@ public class Hud {
         if (actions.hasChildren()) s.add(actions).growX().pad(8, 16, 16, 16);
         else s.add().height(8);
         return s;
+    }
+
+    /** One row of bare icons on a soft pill: big touch targets, no text, no button tiles. */
+    private Table iconStrip() {
+        Table row = new Table();
+        row.setBackground(t.badge);
+        row.pad(2, 6, 2, 6);
+        row.setTouchable(Touchable.enabled);
+        for (final Item it : panel.viewIcons) {
+            final boolean on = it.checked != null && it.checked.on();
+            final Label l = icon(it.icon, t.icons, on ? t.primary : t.text);
+            final Color base = new Color(on ? t.primary : t.text);
+            Container<Label> c = new Container<>(l);
+            c.setTouchable(Touchable.enabled);
+            c.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ClickListener() {
+                @Override
+                public boolean touchDown(InputEvent e, float x, float y, int pointer, int button) {
+                    l.setColor(t.cyan);
+                    return super.touchDown(e, x, y, pointer, button);
+                }
+
+                @Override
+                public void touchUp(InputEvent e, float x, float y, int pointer, int button) {
+                    l.setColor(base);
+                    super.touchUp(e, x, y, pointer, button);
+                }
+
+                @Override
+                public void clicked(InputEvent e, float x, float y) {
+                    if (it.enabled && it.action != null) Gdx.app.postRunnable(it.action);
+                }
+            });
+            row.add(c).size(48, 44);
+        }
+        return row;
     }
 
     private Label caption(String s) {
@@ -466,7 +509,8 @@ public class Hud {
         toastBox.validate();
         toastBox.setHeight(toastBox.getPrefHeight());
         float areaW = sideLayout && sheet != null ? stage.getWidth() - sheet.getWidth() : stage.getWidth();
-        toastBox.setPosition((areaW - w) / 2f, stage.getHeight() - insetTop - TOP - 12 - toastBox.getHeight());
+        float below = iconRow != null ? iconRow.getPrefHeight() + 8 : 0; // keep the icon strip reachable
+        toastBox.setPosition((areaW - w) / 2f, stage.getHeight() - insetTop - TOP - 12 - below - toastBox.getHeight());
         toastBox.toFront();
     }
 

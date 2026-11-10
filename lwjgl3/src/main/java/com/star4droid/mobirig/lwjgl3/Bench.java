@@ -37,7 +37,12 @@ public class Bench {
             com.star4droid.mobirig.rig.VoxelBinder.debugPoint = new float[]{Float.parseFloat(d[0]), Float.parseFloat(d[1]), Float.parseFloat(d[2])};
         }
         long t0 = System.currentTimeMillis();
-        RigPipeline p = new RigPipeline(src, new Matrix4());
+        Matrix4 orient = new Matrix4();
+        if (System.getProperty("yaw") != null) orient.setToRotation(Vector3.Y, Float.parseFloat(System.getProperty("yaw")));
+        if (System.getProperty("mirror") != null) orient.mulLeft(new Matrix4().setToScaling(-1, 1, 1));
+        com.star4droid.mobirig.rig.FingerDetector.debug = true;
+        if (System.getProperty("band") != null) com.star4droid.mobirig.rig.FingerDetector.BAND = Float.parseFloat(System.getProperty("band"));
+        RigPipeline p = new RigPipeline(src, orient);
         long tLoad = System.currentTimeMillis() - t0;
         if (args[2].equals("guess")) p.guessMarkers();
         else {
@@ -51,7 +56,17 @@ public class Bench {
             p.markers = m;
         }
         for (Markers.Kind k : Markers.Kind.values()) System.out.println("MARKER " + k + " " + p.markers.get(k));
+        com.star4droid.mobirig.rig.Quality.dumpPose = System.getProperty("dump");
         p.rig(res, null);
+        if (com.star4droid.mobirig.rig.Quality.dumped != null) {
+            float[] d = com.star4droid.mobirig.rig.Quality.dumped;
+            java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(8 + d.length * 8 + p.mesh.tris.length * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            bb.putInt(p.mesh.vertexCount).putInt(p.mesh.triCount);
+            for (float f : p.mesh.pos) bb.putFloat(f);
+            for (float f : d) bb.putFloat(f);
+            for (int t : p.mesh.tris) bb.putInt(t);
+            Files.write(new File(args[3] + ".pose.bin").toPath(), bb.array());
+        }
         Files.write(new File(args[3]).toPath(), p.output);
         // skeleton dump for the Blender baseline
         StringBuilder sb = new StringBuilder("{");
@@ -67,6 +82,10 @@ public class Bench {
         System.out.printf("RESULT %s verts=%d tris=%d islands=%d load=%dms fit=%dms bind=%dms export=%dms quality=%dms%n",
             new File(args[1]).getName(), p.mesh.vertexCount, p.mesh.triCount, p.mesh.islandCount, tLoad, p.fitMs, p.bindMs, p.exportMs, p.qualityMs);
         for (String n : p.notes) System.out.println("NOTE " + n);
+        for (int j = 0; j < p.skeleton.joints.size; j++) {
+            Skeleton.Joint jt = p.skeleton.joints.get(j);
+            if (jt.name.startsWith("LeftHand")) System.out.printf("JOINT %s %.4f %.4f %.4f%n", jt.name, jt.pos.x, jt.pos.y, jt.pos.z);
+        }
         print(p.quality);
     }
 

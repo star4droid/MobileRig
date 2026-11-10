@@ -46,6 +46,11 @@ public class FingerDetector {
 
     public final Array<Finger> fingers = new Array<>();
     public final Array<String> notes = new Array<>();
+    /** Unit vector out of the palm of the left hand, measured from the shape (not assumed). */
+    public final Vector3 palm = new Vector3(0, -1, 0);
+    public static boolean debug;
+    /** Half width of the weight blend at each finger joint, as a fraction of the finger length. */
+    public static float BAND = 0.14f;
 
     private RigMesh mesh;
     private float[] g;
@@ -194,8 +199,91 @@ public class FingerDetector {
             fingers.add(others.get(i));
         }
         notes.add("Fingers: " + fingers.size + " per hand detected");
+        findPalm(wrist);
         buildWeights();
         return true;
+    }
+
+    /**
+     * Which way the palm faces. The finger plane gives the axis; the side comes from the hand itself,
+     * so it is right for left or right hands, mirrored models and palms facing any way:
+     * the thumb sits on the palm side of the finger plane, and resting fingers bow toward the palm.
+     */
+    private void findPalm(Vector3 wrist) {
+        Finger thumb = fingers.first();
+        Array<Finger> others = new Array<>();
+        for (Finger f : fingers) if (!f.thumb) others.add(f);
+        Vector3 knuckles = new Vector3();
+        for (Finger f : others) knuckles.add(f.joints[0]);
+        Vector3 hd = new Vector3();
+        Vector3 lat = new Vector3();
+        if (others.size >= 2) {
+            knuckles.scl(1f / others.size);
+            hd.set(knuckles).sub(wrist);
+            lat.set(others.first().joints[0]).sub(others.peek().joints[0]);
+        } else if (others.size == 1) {
+            hd.set(others.first().joints[3]).sub(wrist);
+            lat.set(others.first().joints[0]).sub(thumb.joints[1]);
+        } else {
+            hd.set(thumb.joints[3]).sub(wrist);
+            lat.set(0, 1, 0).crs(hd);
+        }
+        Vector3 n0 = new Vector3(hd).crs(lat);
+        if (n0.len2() < 1e-12f) return;
+        n0.nor();
+        // plane through the finger centre lines (principal axes); n0 only orients it
+        Array<Vector3> pts = new Array<>();
+        for (Finger f : others) for (Vector3 j : f.joints) pts.add(j);
+        Vector3 c = new Vector3();
+        Vector3 n = new Vector3(n0);
+        if (pts.size >= 6) {
+            for (Vector3 q : pts) c.add(q);
+            c.scl(1f / pts.size);
+            float[] m = new float[9];
+            for (Vector3 q : pts) {
+                float x = q.x - c.x, y = q.y - c.y, z = q.z - c.z;
+                m[0] += x * x; m[1] += x * y; m[2] += x * z; m[4] += y * y; m[5] += y * z; m[8] += z * z;
+            }
+            m[3] = m[1]; m[6] = m[2]; m[7] = m[5];
+            Vector3 e1 = principal(m, new Vector3(hd).nor(), null);
+            Vector3 e2 = principal(m, new Vector3(lat).nor(), e1);
+            Vector3 pn = new Vector3(e1).crs(e2);
+            if (pn.len2() > 1e-12f) {
+                pn.nor();
+                n.set(pn).scl(pn.dot(n0) < 0 ? -1 : 1);
+            }
+        } else {
+            for (Vector3 q : fingers.first().joints) c.add(q);
+            for (Finger f : others) c.add(f.joints[0]);
+            c.scl(1f / (4 + others.size));
+        }
+        n0.set(n);
+        float sThumb = 0, sBow = 0;
+        if (others.size > 0)
+            for (int j = 1; j < 4; j++) sThumb += new Vector3(thumb.joints[j]).sub(c).dot(n0) / 3f;
+        for (Finger f : others) {
+            Vector3 mid = new Vector3(f.joints[1]).add(f.joints[2]).scl(0.5f);
+            Vector3 ends = new Vector3(f.joints[0]).add(f.joints[3]).scl(0.5f);
+            sBow -= mid.sub(ends).dot(n0) / others.size;
+        }
+        float score = (sThumb + 0.5f * sBow) / lh;
+        if (debug) notes.add(String.format(java.util.Locale.US, "Palm n0=%s thumb=%.4f bow=%.4f score=%.4f", n0, sThumb / lh, sBow / lh, score));
+        // without a clear cue assume a left hand on the +x side (anatomical default)
+        palm.set(n0).scl(score < -0.004f ? -1 : 1);
+    }
+
+    /** Largest principal axis of the symmetric 3x3 matrix m, orthogonal to {@code not} when given. */
+    private static Vector3 principal(float[] m, Vector3 start, Vector3 not) {
+        Vector3 v = new Vector3(start);
+        Vector3 t = new Vector3();
+        for (int it = 0; it < 60; it++) {
+            if (not != null) v.mulAdd(not, -v.dot(not));
+            t.set(m[0] * v.x + m[1] * v.y + m[2] * v.z, m[3] * v.x + m[4] * v.y + m[5] * v.z, m[6] * v.x + m[7] * v.y + m[8] * v.z);
+            if (t.len2() < 1e-20f) break;
+            v.set(t).nor();
+        }
+        if (not != null) v.mulAdd(not, -v.dot(not)).nor();
+        return v;
     }
 
     private boolean reached(int i) {
@@ -386,6 +474,20 @@ public class FingerDetector {
                 }
             }
             int f = best != null && fingerOf.containsKey(best.chain) ? fingerOf.get(best.chain) : -1;
+            if (best == null || bd > 1.5f * best.r + 2 * step) {
+                // beyond the rings of its own finger (tips, short thumbs): nearest finger centre line
+                f = -1;
+                float fd = Float.MAX_VALUE;
+                for (int i = 0; i < fingers.size; i++) {
+                    Finger fg = fingers.get(i);
+                    float dd = Float.MAX_VALUE;
+                    for (int j = 1; j < 4; j++) dd = Math.min(dd, segDist(q, fg.joints[j - 1], fg.joints[j]));
+                    if (dd < fd && dd < 0.35f * fg.length && g[v] > fg.lv[1]) {
+                        fd = dd;
+                        f = i;
+                    }
+                }
+            }
             if (f < 0) {
                 // palm: join the closest knuckle when near it
                 float kd = Float.MAX_VALUE;
@@ -399,7 +501,7 @@ public class FingerDetector {
             }
             if (f < 0) continue;
             Finger fg = fingers.get(f);
-            float b = Math.max(0.09f * fg.length, step * 0.6f);
+            float b = Math.max(BAND * fg.length, step * 0.6f);
             float x = g[v];
             float s0 = smooth((x - fg.lv[0] + b) / (2 * b));
             float s1 = smooth((x - fg.lv[1] + b) / (2 * b));
@@ -410,6 +512,14 @@ public class FingerDetector {
             vW[v * 4 + 2] = s1 * (1 - s2);
             vW[v * 4 + 3] = s2;
         }
+    }
+
+    private static float segDist(Vector3 q, Vector3 a, Vector3 b) {
+        float abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+        float l2 = abx * abx + aby * aby + abz * abz;
+        float t = l2 > 0 ? ((q.x - a.x) * abx + (q.y - a.y) * aby + (q.z - a.z) * abz) / l2 : 0;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        return Vector3.dst(q.x, q.y, q.z, a.x + abx * t, a.y + aby * t, a.z + abz * t);
     }
 
     private static float smooth(float t) {
@@ -462,6 +572,7 @@ public class FingerDetector {
                 Vector3 a = new Vector3(aim).scl(1f / count);
                 a.x *= side;
                 hj.aim = a;
+                hj.rollHint = new Vector3(palm.x * side, palm.y, palm.z);
                 hj.tail.set(a);
             }
             for (Finger f : fingers) {
@@ -471,6 +582,7 @@ public class FingerDetector {
                     Skeleton.Joint jt = sk.joints.get(idx);
                     jt.pos.set(f.joints[j].x * side, f.joints[j].y, f.joints[j].z);
                     jt.finger = true;
+                    jt.rollHint = new Vector3(palm.x * side, palm.y, palm.z);
                     jt.deform = j < 3;
                     parent = idx;
                 }

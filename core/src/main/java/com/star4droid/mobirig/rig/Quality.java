@@ -25,6 +25,9 @@ public class Quality {
     public final java.util.HashMap<String, Integer> bleedPairs = new java.util.HashMap<>();
     public final java.util.HashMap<String, float[]> bleedWhere = new java.util.HashMap<>();
     public int vertexCount;
+    /** Debug: keep the deformed positions of this pose in {@link #dumped}. */
+    public static String dumpPose;
+    public static float[] dumped;
 
     public static Quality measure(RigMesh mesh, Skeleton sk, int[] joints, float[] weights) {
         Quality q = new Quality();
@@ -68,6 +71,7 @@ public class Quality {
             float[][] skin = new float[nj][];
             for (int j = 0; j < nj; j++) skin[j] = new Matrix4(g[j]).mul(ibm[j]).val;
             float[] posed = deform(mesh, skin, joints, weights);
+            if (dumpPose != null && dumpPose.equals(pose.name)) dumped = posed;
             q.poses.add(score(mesh, posed, pose.name, restVol));
         }
         return q;

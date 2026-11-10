@@ -316,13 +316,15 @@ public class Main extends ApplicationAdapter {
             showMarkers();
         }).checked(() -> fingersEnabled));
         p.tools.add(new Hud.Item(Theme.I_FIT, "Fit view", ortho::reset));
-        p.tools.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> turnInMarkers(Vector3.X)));
-        p.tools.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> turnInMarkers(Vector3.Y)));
-        p.tools.add(new Hud.Item(Theme.I_ROT_R, "Rotate Z", () -> turnInMarkers(Vector3.Z)));
-        p.tools.add(new Hud.Item(Theme.I_FLIP, "Face me", () -> turnInMarkers(null)));
-        p.tools.add(new Hud.Item(Theme.I_MIRROR, "Mirror", () -> {
+        // turning the model: a bare icon strip on top of the view
+        p.viewIcons.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> turnInMarkers(Vector3.X)));
+        p.viewIcons.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> turnInMarkers(Vector3.Y)));
+        p.viewIcons.add(new Hud.Item(Theme.I_ROT_R, "Rotate Z", () -> turnInMarkers(Vector3.Z)));
+        p.viewIcons.add(new Hud.Item(Theme.I_FLIP, "Face me", () -> turnInMarkers(null)));
+        p.viewIcons.add(new Hud.Item(Theme.I_MIRROR, "Mirror", () -> {
             mirror();
             restartMarkers();
+            hud.toast(mirrored ? "Mirrored left and right." : "Mirror off.", false);
         }).checked(() -> mirrored));
         p.secondary = new Hud.Item(Theme.I_BACK, "Back", this::backToOrient);
         p.primary = new Hud.Item(Theme.I_SPARK, "Rig it", this::startRig);
@@ -396,6 +398,8 @@ public class Main extends ApplicationAdapter {
         if (axis == null) flipFacing();
         else rotate(axis);
         restartMarkers();
+        hud.toast(axis == null ? "Turned around (180 degrees)."
+            : "Turned 90 degrees around " + (axis == Vector3.X ? "X" : axis == Vector3.Y ? "Y" : "Z") + ".", false);
     }
 
     private void restartMarkers() {
@@ -587,6 +591,11 @@ public class Main extends ApplicationAdapter {
     private void devAutoRig() {
         // the viewport must exist before markers are framed
         view.set(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
+        String yaw = System.getProperty("mobirig.yaw");
+        if (yaw != null && !yaw.isEmpty()) {
+            scene.modelInstance.transform.mulLeft(tmpM.setToRotation(Vector3.Y, Float.parseFloat(yaw)));
+            dropToFloor();
+        }
         enterMarkers();
         if (!devMarkers.equals("guess")) {
             JsonValue mj = new JsonReader().parse(Gdx.files.absolute(devMarkers).readString("UTF-8"));

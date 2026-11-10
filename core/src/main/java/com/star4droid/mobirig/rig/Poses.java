@@ -52,7 +52,7 @@ public class Poses {
         p.add(new Pose("Rest", false));
         p.add(new Pose("Arms down", true).r("LeftArm", 0, 0, 1, -(75 - drop)));
         p.add(new Pose("Arms up", true).r("LeftArm", 0, 0, 1, 70 + drop));
-        p.add(new Pose("Arms forward", true).r("LeftArm", 0, 1, 0, -80));
+        p.add(new Pose("Reach", true).r("LeftArm", 0, 1, 0, -80));
         p.add(new Pose("Elbows bent", true).r("LeftArm", 0, 0, 1, -(60 - drop)).r("LeftForeArm", 0, 1, 0, -110));
         p.add(new Pose("Wrist twist", true).r("LeftForeArm", 1, 0, 0, 70));
         p.add(new Pose("Squat", true).r("LeftUpLeg", 1, 0, 0, -95).r("LeftLeg", 1, 0, 0, 120).r("LeftFoot", 1, 0, 0, -25));
@@ -107,32 +107,36 @@ public class Poses {
         return out;
     }
 
-    /** Curls every finger toward the palm (axis = finger direction x palm normal). */
+    /**
+     * Curls every finger toward the palm. The palm side comes from the hand's shape (see
+     * FingerDetector), so fingers never bend backwards whatever the hand orientation. The thumb
+     * folds across the palm toward the middle finger instead of straight down.
+     */
     private static void addFist(Skeleton sk, Quaternion[] worldDelta) {
         Skeleton.Joint hand = sk.get("LeftHand");
-        Vector3 hd = new Vector3(hand.aim != null ? hand.aim : hand.tail).sub(hand.pos).nor();
-        Skeleton.Joint first = null, last = null;
-        for (String n : new String[]{"Index", "Middle", "Ring", "Pinky"}) {
-            Skeleton.Joint j = sk.get("LeftHand" + n + "1");
-            if (j == null) continue;
-            if (first == null) first = j;
-            last = j;
-        }
         Vector3 n = new Vector3(0, -1, 0);
-        if (first != null && last != null && first != last) {
-            Vector3 lat = new Vector3(first.pos).sub(last.pos);
-            n.set(hd).crs(lat).nor();
-        }
-        float[] ang = {65, 85, 55}, angT = {20, 35, 40};
+        if (hand.rollHint != null) n.set(hand.rollHint).nor();
+        Skeleton.Joint mid = sk.get("LeftHandMiddle1");
+        if (mid == null) mid = sk.get("LeftHandIndex1");
+        float[] ang = {70, 90, 60}, angT = {25, 30, 45};
         for (int j = 0; j < sk.joints.size; j++) {
             Skeleton.Joint jt = sk.joints.get(j);
             if (!jt.finger || !jt.deform || !jt.name.startsWith("Left")) continue;
             int c = sk.primaryChild(j);
             if (c < 0) continue;
             Vector3 d = new Vector3(sk.joints.get(c).pos).sub(jt.pos).nor();
-            Vector3 axis = new Vector3(d).crs(n).nor();
+            Vector3 toward = new Vector3(n);
+            boolean thumb = jt.name.contains("Thumb");
+            if (thumb && mid != null) {
+                Vector3 across = new Vector3(mid.pos).sub(jt.pos);
+                across.mulAdd(d, -across.dot(d));
+                if (across.len2() > 1e-12f) toward.add(across.nor()).nor();
+            }
+            Vector3 axis = new Vector3(d).crs(toward);
+            if (axis.len2() < 1e-12f) continue;
+            axis.nor();
             int seg = jt.name.charAt(jt.name.length() - 1) - '1';
-            float a = jt.name.contains("Thumb") ? angT[seg] : ang[seg];
+            float a = thumb ? angT[seg] : ang[seg];
             add(sk, worldDelta, jt.name, axis, a);
             add(sk, worldDelta, "Right" + jt.name.substring(4), new Vector3(axis.x, -axis.y, -axis.z), a);
         }
