@@ -20,6 +20,10 @@ public class Skeleton {
         public final Vector3 tail = new Vector3();
         /** Optional start of the weight segment if it should differ from pos. */
         public Vector3 weightHead;
+        /** Optional point the joint's Y axis aims at (instead of its first child). */
+        public Vector3 aim;
+        /** Finger joints get their weights from the finger detector, not the voxel binder. */
+        public boolean finger;
 
         Joint(String name, int parent, int side) {
             this.name = name;
@@ -72,7 +76,7 @@ public class Skeleton {
         for (int j = 0; j < joints.size; j++) {
             Joint jt = joints.get(j);
             int c = primaryChild(j);
-            Vector3 target = c >= 0 ? joints.get(c).pos : (jt.tail.isZero() ? null : jt.tail);
+            Vector3 target = jt.aim != null ? jt.aim : c >= 0 ? joints.get(c).pos : (jt.tail.isZero() ? null : jt.tail);
             if (target == null || target.dst2(jt.pos) < 1e-12f) {
                 if (jt.parent >= 0) jt.worldRot.set(joints.get(jt.parent).worldRot);
                 else jt.worldRot.idt();

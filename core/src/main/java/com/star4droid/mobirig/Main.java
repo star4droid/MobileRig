@@ -104,6 +104,10 @@ public class Main extends ApplicationAdapter {
 
     private Theme theme;
     private Hud hud;
+    private com.star4droid.mobirig.ui.MarkerGuide guide;
+    private boolean fingersEnabled = true;
+    private final com.badlogic.gdx.graphics.OrthographicCamera lensCam = new com.badlogic.gdx.graphics.OrthographicCamera();
+    private final Rectangle lensRect = new Rectangle();
     private Stage stage;
     private float density = 1f;
     private final Rectangle view = new Rectangle();
@@ -165,6 +169,8 @@ public class Main extends ApplicationAdapter {
         vp.setUnitsPerPixel(1f / density);
         stage = new Stage(vp, batch);
         hud = new Hud(theme, stage);
+        guide = new com.star4droid.mobirig.ui.MarkerGuide(theme);
+        stage.addActor(guide.actor());
         applyInsets();
         showOrient();
         setInput();
@@ -219,6 +225,7 @@ public class Main extends ApplicationAdapter {
                 }
             }
             if (found == null) return false;
+            hud.setSheetHidden(true);
             dragging = found;
             dragMirror = mir;
             dragOffset = Gdx.app.getType() == Application.ApplicationType.Android ? 56f * density : 0f;
@@ -241,6 +248,7 @@ public class Main extends ApplicationAdapter {
         public boolean touchUp(int x, int y, int pointer, int button) {
             if (dragging == null) return false;
             dragging = null;
+            hud.setSheetHidden(false);
             return true;
         }
     }
@@ -288,18 +296,34 @@ public class Main extends ApplicationAdapter {
         p.maxHeight = 0.44f;
         p.hint = selected.label + ": " + selected.hint + ". Drag the dots onto the model; the right side mirrors automatically.";
         p.chipsTitle = "Markers";
+        p.chipCols = 3;
         for (final Markers.Kind k : Markers.Kind.values()) {
             p.chips.add(new Hud.Item(Theme.I_PERSON, k.label, () -> {
                 selected = k;
                 showMarkers();
             }).dot(k.center ? theme.amber : theme.cyan).checked(() -> selected == k));
         }
-        p.toolsTitle = "Helpers";
+        p.toolsTitle = "Tools";
+        p.tools.add(new Hud.Item(Theme.I_ERROR, "Guide", guide::show));
         p.tools.add(new Hud.Item(Theme.I_MAGIC, "Guess", () -> {
             pipeline.guessMarkers();
             hud.toast("Markers guessed from the shape. Check each one.", false);
         }));
+        p.tools.add(new Hud.Item(Theme.I_PALM, "Fingers", () -> {
+            fingersEnabled = !fingersEnabled;
+            hud.toast(fingersEnabled ? "Fingers will be detected and rigged (Mixamo finger bones)."
+                : "Fingers off: each hand is one bone.", false);
+            showMarkers();
+        }).checked(() -> fingersEnabled));
         p.tools.add(new Hud.Item(Theme.I_FIT, "Fit view", ortho::reset));
+        p.tools.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> turnInMarkers(Vector3.X)));
+        p.tools.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> turnInMarkers(Vector3.Y)));
+        p.tools.add(new Hud.Item(Theme.I_ROT_R, "Rotate Z", () -> turnInMarkers(Vector3.Z)));
+        p.tools.add(new Hud.Item(Theme.I_FLIP, "Face me", () -> turnInMarkers(null)));
+        p.tools.add(new Hud.Item(Theme.I_MIRROR, "Mirror", () -> {
+            mirror();
+            restartMarkers();
+        }).checked(() -> mirrored));
         p.secondary = new Hud.Item(Theme.I_BACK, "Back", this::backToOrient);
         p.primary = new Hud.Item(Theme.I_SPARK, "Rig it", this::startRig);
         hud.show(1, p);
@@ -350,7 +374,7 @@ public class Main extends ApplicationAdapter {
             return;
         }
         try {
-            if (pipeline == null || !pipeline.orient.equals(scene.modelInstance.transform)) {
+            if (pipeline == null || !java.util.Arrays.equals(pipeline.orient.val, scene.modelInstance.transform.val)) {
                 pipeline = new RigPipeline(modelBytes, scene.modelInstance.transform);
                 pipeline.guessMarkers();
             }
@@ -365,6 +389,26 @@ public class Main extends ApplicationAdapter {
         sceneManager.setCamera(ortho.camera);
         showMarkers();
         setInput();
+    }
+
+    /** Turns the model while placing markers; the markers are guessed again for the new orientation. */
+    private void turnInMarkers(Vector3 axis) {
+        if (axis == null) flipFacing();
+        else rotate(axis);
+        restartMarkers();
+    }
+
+    private void restartMarkers() {
+        try {
+            pipeline = new RigPipeline(modelBytes, scene.modelInstance.transform);
+            pipeline.guessMarkers();
+        } catch (RuntimeException e) {
+            hud.toast("This model can't be rigged: " + e.getMessage(), true);
+            return;
+        }
+        framedForView = false;
+        showMarkers();
+        hud.toast("Model turned. Markers were guessed again: check them.", false);
     }
 
     private void frameOrtho() {
@@ -393,6 +437,7 @@ public class Main extends ApplicationAdapter {
         setInput();
         final boolean android = Gdx.app.getType() == Application.ApplicationType.Android;
         final int res = android ? 96 : 128;
+        pipeline.fingers = fingersEnabled;
         progressText = "Starting";
         progressF = 0;
         hud.progress("Rigging your character", "Starting...", 0);
@@ -451,7 +496,7 @@ public class Main extends ApplicationAdapter {
             orbit.yaw = Float.parseFloat(v[0]);
             orbit.pitch = Float.parseFloat(v[1]);
             orbit.distance = hgt * Float.parseFloat(v[2]);
-            orbit.target.set(0, hgt * Float.parseFloat(v[3]), 0);
+            orbit.target.set(v.length > 4 ? hgt * Float.parseFloat(v[4]) : 0, hgt * Float.parseFloat(v[3]), v.length > 5 ? hgt * Float.parseFloat(v[5]) : 0);
             orbit.update();
             showBones = false;
         }
@@ -552,6 +597,17 @@ public class Main extends ApplicationAdapter {
             pipeline.markers.constrainAll(pipeline.mesh);
         }
         if (devPose != null && devPose.equals("Markers")) return;
+        if (devPose != null && devPose.equals("Guide")) {
+            Gdx.app.postRunnable(guide::show);
+            return;
+        }
+        if (devPose != null && devPose.startsWith("Lens:")) {
+            dragging = Markers.Kind.valueOf(devPose.substring(5));
+            selected = dragging;
+            showMarkers();
+            hud.setSheetHidden(true);
+            return;
+        }
         startRig();
     }
 
@@ -718,6 +774,7 @@ public class Main extends ApplicationAdapter {
         stage.getViewport().update(width, height, true);
         applyInsets();
         hud.rebuild();
+        if (guide.isShown()) guide.show();
         framedForView = false;
     }
 
@@ -756,6 +813,7 @@ public class Main extends ApplicationAdapter {
         HdpiUtils.glViewport(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
         if (step == Step.MARKERS && pipeline != null) drawMarkers();
         stage.draw();
+        if (step == Step.MARKERS && dragging != null) drawLens();
     }
 
     private void drawGrid(Camera cam) {
@@ -828,6 +886,80 @@ public class Main extends ApplicationAdapter {
         batch.end();
     }
 
+    /** Magnifier in the (hidden) sheet area: the exact spot under the dragged marker, 3x. */
+    private void drawLens() {
+        hud.sheetRect(lensRect);
+        if (lensRect.width < 10 || lensRect.height < 10) return;
+        float size = Math.min(Math.min(190f * density, lensRect.height - 24f * density), lensRect.width - 24f * density);
+        if (size < 60f * density) return;
+        int lx = (int) (lensRect.x + (lensRect.width - size) / 2), ly = (int) (lensRect.y + (lensRect.height - size) / 2);
+        int ls = (int) size;
+        Vector3 m = pipeline.markers.get(dragging);
+        float mx = dragMirror ? -m.x : m.x, my = m.y;
+        float worldPerPx = ortho.camera.viewportHeight * ortho.camera.zoom / Math.max(1f, view.height);
+        float worldSize = ls * worldPerPx / 3f;
+        lensCam.viewportWidth = worldSize;
+        lensCam.viewportHeight = worldSize;
+        lensCam.zoom = 1f;
+        lensCam.position.set(mx, my, ortho.camera.position.z);
+        lensCam.direction.set(0, 0, -1);
+        lensCam.up.set(0, 1, 0);
+        lensCam.near = ortho.camera.near;
+        lensCam.far = ortho.camera.far;
+        lensCam.update();
+
+        // frame + background
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        tmpM.setToOrtho2D(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
+        shapes.setProjectionMatrix(tmpM);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        float b = 3f * density;
+        shapes.setColor(theme.primary);
+        shapes.rect(lx - b, ly - b, ls + 2 * b, ls + 2 * b);
+        shapes.end();
+        Gdx.gl.glEnable(GL20.GL_SCISSOR_TEST);
+        HdpiUtils.glScissor(lx, ly, ls, ls);
+        Gdx.gl.glClearColor(theme.bg.r, theme.bg.g, theme.bg.b, 1f);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT | GL20.GL_DEPTH_BUFFER_BIT);
+        HdpiUtils.glViewport(lx, ly, ls, ls);
+        sceneManager.setCamera(lensCam);
+        sceneManager.render();
+        sceneManager.setCamera(ortho.camera);
+        Gdx.gl.glDisable(GL20.GL_SCISSOR_TEST);
+        HdpiUtils.glViewport(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
+
+        // crosshair with a gap + marker ring at the exact point
+        Gdx.gl.glDisable(GL20.GL_DEPTH_TEST);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        float cx = lx + ls / 2f, cy = ly + ls / 2f, gap = 9f * density, arm = ls / 2f - 6f * density;
+        Color c = dragging.center ? theme.amber : theme.cyan;
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        float th = 1.5f * density;
+        shapes.setColor(0, 0, 0, 0.6f);
+        shapes.rect(cx - arm, cy - th, arm - gap, th * 2);
+        shapes.rect(cx + gap, cy - th, arm - gap, th * 2);
+        shapes.rect(cx - th, cy - arm, th * 2, arm - gap);
+        shapes.rect(cx - th, cy + gap, th * 2, arm - gap);
+        shapes.setColor(c);
+        th = 0.75f * density;
+        shapes.rect(cx - arm, cy - th, arm - gap, th * 2);
+        shapes.rect(cx + gap, cy - th, arm - gap, th * 2);
+        shapes.rect(cx - th, cy - arm, th * 2, arm - gap);
+        shapes.rect(cx - th, cy + gap, th * 2, arm - gap);
+        shapes.circle(cx, cy, 2.5f * density, 16);
+        shapes.end();
+        shapes.begin(ShapeRenderer.ShapeType.Line);
+        shapes.setColor(c);
+        shapes.circle(cx, cy, gap - 2f * density, 32);
+        shapes.end();
+        // caption above the lens
+        batch.getProjectionMatrix().setToOrtho2D(0, 0, Gdx.graphics.getWidth() / density, Gdx.graphics.getHeight() / density);
+        batch.begin();
+        theme.smallBold.setColor(theme.text);
+        theme.smallBold.draw(batch, dragging.label + "  ×3", lx / density, (ly + ls) / density + 18, ls / density, com.badlogic.gdx.utils.Align.center, false);
+        batch.end();
+    }
+
     private void project(Markers.Kind k, boolean mirror, Vector3 out) {
         Vector3 p = pipeline.markers.get(k);
         out.set(mirror ? -p.x : p.x, p.y, p.z);
@@ -869,5 +1001,6 @@ public class Main extends ApplicationAdapter {
         stage.dispose();
         batch.dispose();
         theme.dispose();
+        guide.dispose();
     }
 }

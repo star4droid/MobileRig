@@ -30,7 +30,7 @@ public class Theme implements Disposable {
         I_LAYERS = '', I_HEIGHT = '', I_FLOOR = '', I_ROT_L = '', I_ROT_R = '',
         I_UP = '', I_BOLT = '', I_SPARK = '', I_TUNE = '', I_RUN = '',
         I_YOGA = '', I_HAND = '', I_PEOPLE = '', I_3D = '', I_360 = '',
-        I_SIDE = '', I_SETTINGS = '', I_BONES = '', I_TIMER = '', I_ROTATE = '', I_MORE = '\ue5cf', I_LESS = '\ue5ce';
+        I_SIDE = '', I_SETTINGS = '', I_BONES = '', I_TIMER = '', I_ROTATE = '', I_MORE = '\ue5cf', I_LESS = '\ue5ce', I_PALM = '\ue769';
 
     public final float density;
     public final Color bg = hex(0x0E1016), surface = hex(0x161922), surface2 = hex(0x1E222D), surface3 = hex(0x272C39),
@@ -40,7 +40,7 @@ public class Theme implements Disposable {
 
     public BitmapFont body, bodyBold, small, smallBold, title, display, icons, iconsSmall, iconsLarge;
     public Drawable sheet, sheetSide, card, cardHi, chip, chipDown, chipOn, primaryBtn, primaryDown, primaryOff,
-        ghost, ghostDown, dotShape, tool, toolDown, toolOn, toast, toastError, track, fill, white, scrim, topBar, badge;
+        ghost, ghostDown, dotShape, circle, tool, toolDown, toolOn, toast, toastError, track, fill, white, scrim, topBar, badge;
 
     private final Array<Disposable> owned = new Array<>();
 
@@ -87,6 +87,7 @@ public class Theme implements Disposable {
         fill = round(4, primary, null, 0, true, true, true, true);
         badge = round(9, surface3, null, 0, true, true, true, true);
         dotShape = round(6, Color.WHITE, null, 0, true, true, true, true);
+        circle = circleTex(64);
         topBar = solid(new Color(bg.r, bg.g, bg.b, 0.92f));
         scrim = solid(new Color(0, 0, 0, 0.55f));
         white = solid(Color.WHITE);
@@ -118,6 +119,22 @@ public class Theme implements Disposable {
         f.setUseIntegerPositions(false);
         owned.add(f);
         return f;
+    }
+
+    private Drawable circleTex(int size) {
+        Pixmap pm = new Pixmap(size, size, Pixmap.Format.RGBA8888);
+        pm.setBlending(Pixmap.Blending.None);
+        float r = size / 2f;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++) {
+                float d = (float) Math.sqrt((x + 0.5f - r) * (x + 0.5f - r) + (y + 0.5f - r) * (y + 0.5f - r)) - (r - 1);
+                pm.drawPixel(x, y, Color.rgba8888(1, 1, 1, clamp(0.5f - d)));
+            }
+        Texture t = new Texture(pm, true);
+        t.setFilter(Texture.TextureFilter.MipMapLinearLinear, Texture.TextureFilter.Linear);
+        pm.dispose();
+        owned.add(t);
+        return new TextureRegionDrawable(new TextureRegion(t));
     }
 
     private Drawable solid(Color c) {

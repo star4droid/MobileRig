@@ -16,6 +16,10 @@ public class Fitter {
     private final Slicer slicer;
     private final float h, y0;
     public final Array<String> notes = new Array<>();
+    /** Detect and rig fingers. */
+    public boolean fingers = true;
+    /** Set after fit() when fingers were found. */
+    public FingerDetector fingerDetector;
 
     public Fitter(RigMesh mesh) {
         this.mesh = mesh;
@@ -98,6 +102,14 @@ public class Fitter {
             Skeleton.Joint jt = s.joints.get(j);
             int c = s.primaryChild(j);
             if (c >= 0 && jt.tail.isZero()) jt.tail.set(s.joints.get(c).pos);
+        }
+        if (fingers) {
+            FingerDetector fd = new FingerDetector();
+            if (fd.detect(mesh, hand, tip)) {
+                fd.addJoints(s);
+                fingerDetector = fd;
+            }
+            notes.addAll(fd.notes);
         }
         // the hips bone covers the pelvis down to the thigh heads
         float hipLow = Float.isNaN(crotch) ? upY : (upY + crotch) * 0.5f;

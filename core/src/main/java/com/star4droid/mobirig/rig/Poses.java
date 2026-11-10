@@ -27,6 +27,7 @@ public class Poses {
         public final String name;
         final Array<Rot> rots = new Array<>();
         final boolean mirror;
+        boolean fist;
 
         Pose(String name, boolean mirror) {
             this.name = name;
@@ -56,6 +57,11 @@ public class Poses {
         p.add(new Pose("Wrist twist", true).r("LeftForeArm", 1, 0, 0, 70));
         p.add(new Pose("Squat", true).r("LeftUpLeg", 1, 0, 0, -95).r("LeftLeg", 1, 0, 0, 120).r("LeftFoot", 1, 0, 0, -25));
         p.add(new Pose("Kick", false).r("LeftUpLeg", 1, 0, 0, -80).r("RightUpLeg", 1, 0, 0, 35).r("RightLeg", 1, 0, 0, 60));
+        if (sk.index("LeftHandIndex1") >= 0 || sk.index("LeftHandThumb1") >= 0) {
+            Pose f = new Pose("Fist", true);
+            f.fist = true;
+            p.add(f);
+        }
         p.add(new Pose("Bend & turn", false).r("Spine", 1, 0, 0, 20).r("Spine1", 0, 1, 0, 20).r("Spine2", 1, 0, 0, 15).r("Neck", 0, 1, 0, 25).r("Head", 1, 0, 0, -15));
         return p;
     }
@@ -91,6 +97,7 @@ public class Poses {
                 add(sk, worldDelta, "Right" + r.joint.substring(4), new Vector3(r.axis.x, -r.axis.y, -r.axis.z), r.deg);
             }
         }
+        if (pose.fist) addFist(sk, worldDelta);
         // world-axis delta D on joint j: new local = local * (W^-1 * D * W)
         for (int j = 0; j < n; j++) {
             Quaternion w = sk.joints.get(j).worldRot;
@@ -98,6 +105,37 @@ public class Poses {
             out[j].mul(l);
         }
         return out;
+    }
+
+    /** Curls every finger toward the palm (axis = finger direction x palm normal). */
+    private static void addFist(Skeleton sk, Quaternion[] worldDelta) {
+        Skeleton.Joint hand = sk.get("LeftHand");
+        Vector3 hd = new Vector3(hand.aim != null ? hand.aim : hand.tail).sub(hand.pos).nor();
+        Skeleton.Joint first = null, last = null;
+        for (String n : new String[]{"Index", "Middle", "Ring", "Pinky"}) {
+            Skeleton.Joint j = sk.get("LeftHand" + n + "1");
+            if (j == null) continue;
+            if (first == null) first = j;
+            last = j;
+        }
+        Vector3 n = new Vector3(0, -1, 0);
+        if (first != null && last != null && first != last) {
+            Vector3 lat = new Vector3(first.pos).sub(last.pos);
+            n.set(hd).crs(lat).nor();
+        }
+        float[] ang = {65, 85, 55}, angT = {20, 35, 40};
+        for (int j = 0; j < sk.joints.size; j++) {
+            Skeleton.Joint jt = sk.joints.get(j);
+            if (!jt.finger || !jt.deform || !jt.name.startsWith("Left")) continue;
+            int c = sk.primaryChild(j);
+            if (c < 0) continue;
+            Vector3 d = new Vector3(sk.joints.get(c).pos).sub(jt.pos).nor();
+            Vector3 axis = new Vector3(d).crs(n).nor();
+            int seg = jt.name.charAt(jt.name.length() - 1) - '1';
+            float a = jt.name.contains("Thumb") ? angT[seg] : ang[seg];
+            add(sk, worldDelta, jt.name, axis, a);
+            add(sk, worldDelta, "Right" + jt.name.substring(4), new Vector3(axis.x, -axis.y, -axis.z), a);
+        }
     }
 
     /** Later rotations on the same joint are applied after the earlier ones (in world space). */

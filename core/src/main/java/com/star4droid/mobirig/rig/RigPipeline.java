@@ -17,6 +17,9 @@ public class RigPipeline {
     public Quality quality;
     public final Array<String> notes = new Array<>();
     public long fitMs, bindMs, exportMs, qualityMs;
+    /** Rig fingers when the hands have them. */
+    public boolean fingers = true;
+    public int fingerCount;
 
     public RigPipeline(byte[] source, Matrix4 orient) {
         this.source = source;
@@ -38,7 +41,9 @@ public class RigPipeline {
         long t0 = System.currentTimeMillis();
         if (progress != null) progress.update("Fitting skeleton", 0.02f);
         Fitter fitter = new Fitter(mesh);
+        fitter.fingers = fingers;
         skeleton = fitter.fit(markers);
+        fingerCount = fitter.fingerDetector != null ? fitter.fingerDetector.fingers.size : 0;
         notes.addAll(fitter.notes);
         long t1 = System.currentTimeMillis();
         VoxelBinder binder = new VoxelBinder();
@@ -46,6 +51,7 @@ public class RigPipeline {
         binder.bind(mesh, skeleton, progress == null ? null : (s, f) -> progress.update(s, 0.05f + f * 0.8f));
         joints = binder.joints;
         weights = binder.weights;
+        if (fitter.fingerDetector != null) fitter.fingerDetector.applyWeights(mesh, skeleton, joints, weights);
         long t2 = System.currentTimeMillis();
         if (progress != null) progress.update("Writing GLB", 0.88f);
         output = new GlbExporter().export(source, mesh, skeleton, joints, weights);

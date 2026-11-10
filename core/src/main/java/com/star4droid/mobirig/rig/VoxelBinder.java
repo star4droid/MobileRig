@@ -48,7 +48,10 @@ public class VoxelBinder {
 
     public void bind(RigMesh mesh, Skeleton sk, Progress progress) {
         IntArray deformList = new IntArray();
-        for (int j = 0; j < sk.joints.size; j++) if (sk.joints.get(j).deform) deformList.add(j);
+        for (int j = 0; j < sk.joints.size; j++) {
+            Skeleton.Joint jt = sk.joints.get(j);
+            if (jt.deform && !jt.finger) deformList.add(j); // finger weights come from the finger detector
+        }
         int[] deform = deformList.toArray();
         int nb = deform.length;
 

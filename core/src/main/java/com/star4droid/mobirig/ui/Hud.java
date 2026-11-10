@@ -67,6 +67,8 @@ public class Hud {
         public Item primary, secondary;
         /** Largest share of the screen height the bottom sheet may take (phones in portrait). */
         public float maxHeight = 0.56f;
+        /** Fixed number of chip columns (0 = automatic). */
+        public int chipCols;
     }
 
     private static final String[] STEPS = {"Import", "Markers", "Rig", "Test"};
@@ -85,7 +87,9 @@ public class Hud {
     private Panel panel = new Panel();
     private int step;
     private String info = "";
-    private boolean collapsed;
+    private boolean collapsed, sheetHidden;
+    private ScrollPane scroll;
+    private float keepScroll = -1;
     private float insetTop, insetBottom, insetLeft, insetRight;
 
     public Hud(Theme theme, Stage stage) {
@@ -108,7 +112,10 @@ public class Hud {
     }
 
     public void show(int step, Panel p) {
-        if (step != this.step) collapsed = false;
+        if (step != this.step) {
+            collapsed = false;
+            scroll = null;
+        }
         this.step = step;
         this.panel = p;
         rebuild();
@@ -132,6 +139,7 @@ public class Hud {
     // ------------------------------------------------------------------ layout
 
     public void rebuild() {
+        keepScroll = scroll != null ? scroll.getScrollY() : -1;
         root.clear();
         float w = stage.getWidth(), h = stage.getHeight();
         sideLayout = w >= 700 || (w > h * 1.15f && w >= 560);
@@ -164,8 +172,29 @@ public class Hud {
             root.add(sheet).growX();
         }
         root.validate();
+        if (scroll != null && keepScroll > 0) {
+            scroll.layout();
+            scroll.setScrollY(keepScroll);
+            scroll.updateVisualScroll();
+        }
+        sheet.setVisible(!sheetHidden);
         layoutToast();
         layoutProgress();
+    }
+
+    /** Hides the sheet without changing the layout (the 3D view keeps its size). */
+    public void setSheetHidden(boolean hidden) {
+        sheetHidden = hidden;
+        if (sheet != null) sheet.setVisible(!hidden);
+        if (hidden) toastBox.setVisible(false);
+    }
+
+    /** Sheet area in screen pixels (x, y from bottom-left). */
+    public Rectangle sheetRect(Rectangle out) {
+        if (sheet == null) return out.set(0, 0, 0, 0);
+        float s = Gdx.graphics.getWidth() / Math.max(1f, stage.getWidth());
+        com.badlogic.gdx.math.Vector2 v = sheet.localToStageCoordinates(new com.badlogic.gdx.math.Vector2(0, 0));
+        return out.set(v.x * s, v.y * s, sheet.getWidth() * s, sheet.getHeight() * s);
     }
 
     private float sideWidth(float w) {
@@ -239,7 +268,8 @@ public class Hud {
         }
         if (panel.chips.size > 0) {
             if (panel.chipsTitle != null) content.add(caption(panel.chipsTitle)).left().padTop(16).row();
-            int cols = inner < 400 ? 2 : Math.max(2, Math.min(4, (int) (inner / 150)));
+            int cols = panel.chipCols > 0 && (inner - 8 * (panel.chipCols - 1)) / panel.chipCols >= 118 ? panel.chipCols
+                : inner < 400 ? 2 : Math.max(2, Math.min(4, (int) (inner / 150)));
             content.add(grid(panel.chips, cols, inner, true)).left().padTop(8).row();
         }
         if (panel.tools.size > 0) {
@@ -249,6 +279,7 @@ public class Hud {
         }
 
         ScrollPane scroll = new ScrollPane(content);
+        this.scroll = scroll;
         scroll.setScrollingDisabled(true, false);
         scroll.setOverscroll(false, true);
         scroll.setFadeScrollBars(true);
