@@ -37,11 +37,19 @@ public class Hud {
         public Color dot;
         public Check checked;
         public boolean enabled = true;
+        /** Shown in a bubble on long press (falls back to the label). */
+        public String tip;
+        boolean longPressed;
 
         public Item(char icon, String label, Runnable action) {
             this.icon = icon;
             this.label = label;
             this.action = action;
+        }
+
+        public Item tip(String s) {
+            tip = s;
+            return this;
         }
 
         public Item dot(Color c) {
@@ -79,7 +87,10 @@ public class Hud {
     private final Theme t;
     private final Stage stage;
     private final Table root = new Table();
-    private final Table toastBox = new Table();
+    private final Table tipBox = new Table();
+    private final Table dialogLayer = new Table();
+    private String status = "";
+    private boolean statusFresh, infoOpen, stripOpen;
     private final Table progressLayer = new Table();
     private Label progressTitle, progressPct;
     private Container<Actor> progressFill;
@@ -101,10 +112,14 @@ public class Hud {
         root.setFillParent(true);
         root.setTouchable(Touchable.childrenOnly);
         stage.addActor(root);
-        stage.addActor(toastBox);
-        toastBox.setVisible(false);
+        stage.addActor(tipBox);
+        tipBox.setVisible(false);
+        tipBox.setTouchable(Touchable.disabled);
+        dialogLayer.setFillParent(true);
+        dialogLayer.setVisible(false);
         buildProgress();
         stage.addActor(progressLayer);
+        stage.addActor(dialogLayer);
     }
 
     public void setInsets(float top, float bottom, float left, float right) {
@@ -118,7 +133,10 @@ public class Hud {
         if (step != this.step) {
             collapsed = false;
             scroll = null;
+            stripOpen = false;
+            infoOpen = false;
         }
+        if (!statusFresh) status = "";
         this.step = step;
         this.panel = p;
         rebuild();
@@ -150,30 +168,29 @@ public class Hud {
 
         Table top = topBar(w);
         sheet = buildSheet(w, h);
-        Table infoRow = new Table();
-        if (!info.isEmpty()) {
-            Label l = label(info, t.small, t.textDim);
-            l.setEllipsis(true);
-            Table chip = new Table();
-            chip.setBackground(t.badge);
-            chip.add(icon(Theme.I_PERSON, t.iconsSmall, t.cyan)).padRight(6);
-            chip.add(l).minWidth(0).maxWidth((sideLayout ? w - sideWidth(w) : w) - 56);
-            chip.pad(5, 10, 5, 12);
-            infoRow.add(chip).left().minWidth(0);
-        }
-        iconRow = panel.viewIcons.size > 0 ? iconStrip() : null;
+        Table viewTop = new Table();
+        Actor infoBtn = info.isEmpty() ? null : iconButton(Theme.I_INFO, "Model details", () -> {
+            infoOpen = !infoOpen;
+            rebuild();
+        }, infoOpen, true);
+        iconRow = stripOpen && panel.viewIcons.size > 0 ? iconStrip() : null;
+        if (infoBtn != null) viewTop.add(infoBtn).size(44).left();
+        if (iconRow != null) viewTop.add(iconRow).expandX();
+        else viewTop.add().expandX();
+        if (infoBtn != null) viewTop.add().size(44);
+        Table infoCard = infoOpen && infoBtn != null ? infoCard() : null;
         if (sideLayout) {
             root.add(top).colspan(2).growX().height(TOP).row();
             Table left = new Table();
-            if (iconRow != null) left.add(iconRow).top().padTop(10).row();
-            left.add(infoRow).left().top().pad(10, 12, 0, 12).minWidth(0).row();
+            left.add(viewTop).growX().top().pad(10, 12, 0, 12).row();
+            if (infoCard != null) left.add(infoCard).left().top().pad(6, 12, 0, 12).row();
             left.add().expand();
             root.add(left).grow().minWidth(0);
             root.add(sheet).width(sideWidth(w)).growY().padTop(4);
         } else {
             root.add(top).growX().height(TOP).row();
-            if (iconRow != null) root.add(iconRow).top().padTop(8).row();
-            root.add(infoRow).left().top().pad(8, 12, 0, 12).minWidth(0).row();
+            root.add(viewTop).growX().top().pad(8, 12, 0, 12).row();
+            if (infoCard != null) root.add(infoCard).left().top().pad(6, 12, 0, 12).row();
             root.add().expand().row();
             root.add(sheet).growX();
         }
@@ -185,7 +202,7 @@ public class Hud {
         }
         sheet.setVisible(!sheetHidden);
         if (iconRow != null) iconRow.setVisible(!sheetHidden);
-        layoutToast();
+        hideTip();
         layoutProgress();
     }
 
@@ -194,7 +211,7 @@ public class Hud {
         sheetHidden = hidden;
         if (sheet != null) sheet.setVisible(!hidden);
         if (iconRow != null) iconRow.setVisible(!hidden);
-        if (hidden) toastBox.setVisible(false);
+        if (hidden) hideTip();
     }
 
     /** Sheet area in screen pixels (x, y from bottom-left). */
@@ -264,7 +281,22 @@ public class Hud {
         Label title = label(panel.title, t.title, t.text);
         title.setEllipsis(true);
         header.add(title).growX().minWidth(0).left();
-        if (canCollapse) header.add(icon(collapsed ? Theme.I_LESS : Theme.I_MORE, t.icons, t.textDim)).padLeft(8);
+        if (panel.viewIcons.size > 0) header.add(iconButton(Theme.I_TURN, "Turn or mirror the model", () -> {
+            stripOpen = !stripOpen;
+            rebuild();
+        }, stripOpen, false)).size(44, 40).padLeft(4);
+        if (canCollapse) header.add(icon(collapsed ? Theme.I_LESS : Theme.I_MORE, t.icons, t.textDim)).size(40, 40).padLeft(2);
+        if (!status.isEmpty()) {
+            Table st = new Table();
+            st.setBackground(t.badge);
+            st.pad(7, 10, 7, 10);
+            st.add(icon(Theme.I_INFO, t.iconsSmall, t.cyan)).top().padRight(8);
+            Label sl = label(status, t.small, t.text);
+            sl.setWrap(true);
+            st.add(sl).growX().minWidth(0);
+            header.row();
+            header.add(st).colspan(3).growX().padTop(6);
+        }
 
         Table content = new Table();
         content.top().left();
@@ -336,33 +368,94 @@ public class Hud {
         row.setBackground(t.badge);
         row.pad(2, 6, 2, 6);
         row.setTouchable(Touchable.enabled);
-        for (final Item it : panel.viewIcons) {
-            final boolean on = it.checked != null && it.checked.on();
-            final Label l = icon(it.icon, t.icons, on ? t.primary : t.text);
-            final Color base = new Color(on ? t.primary : t.text);
-            Container<Label> c = new Container<>(l);
-            c.setTouchable(Touchable.enabled);
-            c.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ClickListener() {
-                @Override
-                public boolean touchDown(InputEvent e, float x, float y, int pointer, int button) {
-                    l.setColor(t.cyan);
-                    return super.touchDown(e, x, y, pointer, button);
-                }
-
-                @Override
-                public void touchUp(InputEvent e, float x, float y, int pointer, int button) {
-                    l.setColor(base);
-                    super.touchUp(e, x, y, pointer, button);
-                }
-
-                @Override
-                public void clicked(InputEvent e, float x, float y) {
-                    if (it.enabled && it.action != null) Gdx.app.postRunnable(it.action);
-                }
-            });
-            row.add(c).size(48, 44);
-        }
+        for (final Item it : panel.viewIcons)
+            row.add(iconButton(it.icon, it.tip != null ? it.tip : it.label, it.enabled ? it.action : null,
+                it.checked != null && it.checked.on(), false)).size(48, 44);
         return row;
+    }
+
+    /** A bare icon: tap runs the action, long press shows what it does. */
+    private Actor iconButton(char ic, final String tip, final Runnable action, boolean on, boolean badge) {
+        final Label l = icon(ic, t.icons, on ? t.primaryHi : t.text);
+        final Color base = new Color(on ? t.primaryHi : t.text);
+        final Container<Label> c = new Container<>(l);
+        if (badge) c.setBackground(on ? t.chipOn : t.badge);
+        c.setTouchable(Touchable.enabled);
+        c.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ActorGestureListener(20, 0.4f, 0.45f, Integer.MAX_VALUE) {
+            @Override
+            public void touchDown(InputEvent e, float x, float y, int pointer, int button) {
+                e.stop();
+                l.setColor(t.cyan);
+            }
+
+            @Override
+            public void touchUp(InputEvent e, float x, float y, int pointer, int button) {
+                l.setColor(base);
+                hideTip();
+            }
+
+            @Override
+            public void tap(InputEvent e, float x, float y, int count, int button) {
+                if (action != null) Gdx.app.postRunnable(action);
+            }
+
+            @Override
+            public boolean longPress(Actor actor, float x, float y) {
+                showTip(c, tip);
+                return true;
+            }
+        });
+        return c;
+    }
+
+    /** Test hook: open the view tools and/or the details card. */
+    public void devOpen(boolean strip, boolean infoCard) {
+        stripOpen = strip;
+        infoOpen = infoCard;
+        rebuild();
+    }
+
+    private Table infoCard() {
+        Table card = new Table();
+        card.setBackground(t.card);
+        card.pad(12, 14, 12, 14);
+        card.setTouchable(Touchable.enabled);
+        String[] parts = info.split("\\s*\u2022\\s*");
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i].trim();
+            if (part.isEmpty()) continue;
+            Label l = label(part, i == 0 ? t.bodyBold : t.body, i == 0 ? t.text : t.textDim);
+            l.setEllipsis(true);
+            card.add(l).left().minWidth(0).maxWidth(Math.min(300, stage.getWidth() - 60)).padTop(i == 0 ? 0 : 4).row();
+        }
+        return card;
+    }
+
+    // ------------------------------------------------------------------ long-press bubble
+
+    private void showTip(Actor over, String text) {
+        if (text == null || text.isEmpty()) return;
+        tipBox.clear();
+        tipBox.setBackground(t.cardHi);
+        tipBox.pad(8, 12, 8, 12);
+        Label l = label(Theme.safe(text), t.small, t.text);
+        l.setWrap(true);
+        l.setAlignment(Align.center);
+        float maxW = Math.min(260, stage.getWidth() - 24);
+        float want = new com.badlogic.gdx.graphics.g2d.GlyphLayout(t.small, Theme.safe(text)).width + 2;
+        tipBox.add(l).width(Math.min(want, maxW - 24));
+        tipBox.pack();
+        com.badlogic.gdx.math.Vector2 v = over.localToStageCoordinates(new com.badlogic.gdx.math.Vector2(over.getWidth() / 2f, over.getHeight()));
+        float x = Math.max(8, Math.min(stage.getWidth() - tipBox.getWidth() - 8, v.x - tipBox.getWidth() / 2f));
+        float y = v.y + 8;
+        if (y + tipBox.getHeight() > stage.getHeight() - 8) y = v.y - over.getHeight() - tipBox.getHeight() - 8;
+        tipBox.setPosition(x, y);
+        tipBox.setVisible(true);
+        tipBox.toFront();
+    }
+
+    private void hideTip() {
+        tipBox.setVisible(false);
     }
 
     private Label caption(String s) {
@@ -436,10 +529,32 @@ public class Hud {
 
     private void wire(final Button b, final Item it) {
         b.setProgrammaticChangeEvents(false);
+        b.addListener(new com.badlogic.gdx.scenes.scene2d.utils.ActorGestureListener(20, 0.4f, 0.45f, Integer.MAX_VALUE) {
+            @Override
+            public void touchDown(InputEvent e, float x, float y, int pointer, int button) {
+                it.longPressed = false;
+            }
+
+            @Override
+            public void touchUp(InputEvent e, float x, float y, int pointer, int button) {
+                hideTip();
+            }
+
+            @Override
+            public boolean longPress(Actor actor, float x, float y) {
+                it.longPressed = true;
+                showTip(b, it.tip != null ? it.tip : it.label);
+                return true;
+            }
+        });
         b.addListener(new ChangeListener() {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
                 if (it.checked != null) b.setChecked(it.checked.on()); // state is owned by the app
+                if (it.longPressed) {
+                    it.longPressed = false;
+                    return;
+                }
                 if (!it.enabled || it.action == null) return;
                 // run after the event so the action can rebuild the UI safely
                 Gdx.app.postRunnable(it.action);
@@ -473,45 +588,43 @@ public class Hud {
         return out.set(0, sh, Gdx.graphics.getWidth(), Math.max(1, Gdx.graphics.getHeight() - topPx - sh));
     }
 
-    // ------------------------------------------------------------------ toast
+    // ------------------------------------------------------------------ messages (no floating toasts)
 
+    /** Short note shown under the panel title until the next action; errors open a dialog instead. */
     public void toast(String msg, boolean error) {
-        toastBox.clear();
-        toastBox.clearActions();
-        toastBox.setBackground(error ? t.toastError : t.toast);
-        toastBox.pad(12, 14, 12, 14);
-        toastBox.add(icon(error ? Theme.I_ERROR : Theme.I_INFO, t.iconsSmall, error ? t.danger : t.cyan)).top().padRight(10);
-        Label l = label(Theme.safe(msg), t.body, t.text);
-        l.setWrap(true);
-        toastBox.add(l).growX().minWidth(0);
-        toastBox.setTouchable(Touchable.enabled);
-        toastBox.clearListeners();
-        toastBox.addListener(new ClickListener() {
-            @Override
-            public void clicked(InputEvent event, float x, float y) {
-                toastBox.clearActions();
-                toastBox.addAction(Actions.sequence(Actions.fadeOut(0.15f), Actions.visible(false)));
-            }
-        });
-        toastBox.setVisible(true);
-        layoutToast();
-        toastBox.getColor().a = 0;
-        toastBox.addAction(Actions.sequence(Actions.fadeIn(0.18f, Interpolation.fade),
-            Actions.delay(error ? 7f : 2.2f), Actions.fadeOut(0.3f), Actions.visible(false)));
+        if (error) {
+            dialog("Something needs attention", msg);
+            return;
+        }
+        status = Theme.safe(msg);
+        statusFresh = true;
+        Gdx.app.postRunnable(() -> statusFresh = false);
+        rebuild();
     }
 
-    private void layoutToast() {
-        float w = Math.min(stage.getWidth() - 24 - insetLeft - insetRight, 520);
-        if (sideLayout && sheet != null) w = Math.min(w, stage.getWidth() - sheet.getWidth() - 24);
-        toastBox.setWidth(w);
-        toastBox.invalidate();
-        toastBox.setHeight(toastBox.getPrefHeight());
-        toastBox.validate();
-        toastBox.setHeight(toastBox.getPrefHeight());
-        float areaW = sideLayout && sheet != null ? stage.getWidth() - sheet.getWidth() : stage.getWidth();
-        float below = iconRow != null ? iconRow.getPrefHeight() + 8 : 0; // keep the icon strip reachable
-        toastBox.setPosition((areaW - w) / 2f, stage.getHeight() - insetTop - TOP - 12 - below - toastBox.getHeight());
-        toastBox.toFront();
+    /** A message the user has to read: card in the middle with one button. */
+    public void dialog(String title, String msg) {
+        dialogLayer.clear();
+        dialogLayer.setBackground(t.scrim);
+        dialogLayer.setTouchable(Touchable.enabled);
+        Table card = new Table();
+        card.setBackground(t.card);
+        card.pad(18, 18, 14, 18);
+        float w = Math.min(420, stage.getWidth() - 40);
+        Table head = new Table();
+        head.add(icon(Theme.I_ERROR, t.icons, t.amber)).padRight(10);
+        Label tl = label(Theme.safe(title), t.title, t.text);
+        tl.setWrap(true);
+        head.add(tl).growX().minWidth(0);
+        card.add(head).width(w - 36).row();
+        Label l = label(Theme.safe(msg), t.body, t.textDim);
+        l.setWrap(true);
+        card.add(l).width(w - 36).padTop(10).row();
+        Item ok = new Item(Theme.I_CHECK, "OK", () -> dialogLayer.setVisible(false));
+        card.add(actionButton(ok, true)).height(48).width(140).right().padTop(16);
+        dialogLayer.add(card).width(w);
+        dialogLayer.setVisible(true);
+        dialogLayer.toFront();
     }
 
     // ------------------------------------------------------------------ progress

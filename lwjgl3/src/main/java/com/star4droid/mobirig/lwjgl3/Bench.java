@@ -25,8 +25,73 @@ import java.util.Locale;
 public class Bench {
     public static void main(String[] args) throws Exception {
         Locale.setDefault(Locale.US);
-        if (args[0].equals("rig")) rig(args);
+        if (args[0].equals("gate")) gate(args);
+        else if (args[0].equals("guess")) guess(args);
+        else if (args[0].equals("rig")) rig(args);
         else measure(args[1]);
+    }
+
+    /**
+     * gate <dir>: rigs every body that has reference markers and fails (exit 1) when quality drops.
+     * Run with: ./gradlew :lwjgl3:qualityGate
+     */
+    static void gate(String[] args) throws Exception {
+        File[] files = new File(args[1]).listFiles((d, n) -> n.endsWith(".glb"));
+        java.util.Arrays.sort(files);
+        int fails = 0;
+        for (File f : files) {
+            File mk = new File(f.getPath().replace(".glb", ".markers.json"));
+            if (!mk.exists()) continue;
+            byte[] src = Files.readAllBytes(f.toPath());
+            JsonValue mj = new JsonReader().parse(new String(Files.readAllBytes(mk.toPath()), "UTF-8"));
+            RigPipeline p = new RigPipeline(src, new Matrix4());
+            Markers g = p.guessMarkers();
+            float h = p.mesh.height(), worst = 0;
+            Markers m = new Markers();
+            for (Markers.Kind k : Markers.Kind.values()) {
+                float[] v = mj.get(k.name().toLowerCase()).asFloatArray();
+                m.get(k).set(v[0], v[1], v[2]);
+                worst = Math.max(worst, (float) Math.hypot(g.get(k).x - v[0], g.get(k).y - v[1]) / h * 100);
+            }
+            m.constrainAll(p.mesh);
+            p.markers = m;
+            p.twist = true;
+            p.rig(96, null);
+            float bad = 0;
+            for (Quality.PoseScore sc : p.quality.poses) bad += sc.badEdgePct / p.quality.poses.size;
+            for (String c : com.star4droid.mobirig.rig.Poses.CLIPS) p.clips.add(com.star4droid.mobirig.rig.Poses.builtin(c));
+            byte[] out = p.exportFinal();
+            GlbFile.parse(out);
+            boolean ok = bad < 0.6f && p.quality.unweightedVertices == 0 && p.quality.bleedPct < 1.5f && worst < 8f;
+            if (!ok) fails++;
+            System.out.printf("%s %-30s badEdges=%.3f%% bleed=%.2f%% unweighted=%d guessWorst=%.1f%% fingers=%d%n", ok ? "PASS" : "FAIL",
+                f.getName(), bad, p.quality.bleedPct, p.quality.unweightedVertices, worst, p.fingerCount);
+        }
+        if (fails > 0) {
+            System.out.println(fails + " model(s) below the quality bar");
+            System.exit(1);
+        }
+        System.out.println("Quality gate passed");
+    }
+
+    /** guess <in.glb> <ref markers.json> : error of the guessed markers, as % of the height. */
+    static void guess(String[] args) throws Exception {
+        Matrix4 orient = new Matrix4();
+        if (System.getProperty("yaw") != null) orient.setToRotation(Vector3.Y, Float.parseFloat(System.getProperty("yaw")));
+        for (String k : new String[]{"NECK_T", "CHIN_T", "SHOULDER_X", "PELVIS_UP"})
+            if (System.getProperty(k) != null) Markers.class.getField(k).setFloat(null, Float.parseFloat(System.getProperty(k)));
+        RigPipeline p = new RigPipeline(Files.readAllBytes(new File(args[1]).toPath()), orient);
+        Markers g = p.guessMarkers();
+        JsonValue mj = new JsonReader().parse(new String(Files.readAllBytes(new File(args[2]).toPath()), "UTF-8"));
+        StringBuilder sb = new StringBuilder(String.format("%-28s", new File(args[1]).getName()));
+        float h = p.mesh.height(), worst = 0;
+        for (Markers.Kind k : Markers.Kind.values()) {
+            float[] v = mj.get(k.name().toLowerCase()).asFloatArray();
+            float ex = (g.get(k).x - v[0]) / h * 100, ey = (g.get(k).y - v[1]) / h * 100;
+            worst = Math.max(worst, (float) Math.hypot(ex, ey));
+            sb.append(String.format(" %s(%+.1f,%+.1f)", k.name().substring(0, 2), ex, ey));
+        }
+        System.out.println(sb + String.format(" worst=%.1f %s", worst, g.guessNote));
     }
 
     static void rig(String[] args) throws Exception {
@@ -57,7 +122,29 @@ public class Bench {
         }
         for (Markers.Kind k : Markers.Kind.values()) System.out.println("MARKER " + k + " " + p.markers.get(k));
         com.star4droid.mobirig.rig.Quality.dumpPose = System.getProperty("dump");
+        p.twist = System.getProperty("twist") != null;
         p.rig(res, null);
+        if (System.getProperty("clips") != null) {
+            for (String c : com.star4droid.mobirig.rig.Poses.CLIPS) p.clips.add(com.star4droid.mobirig.rig.Poses.builtin(c));
+            if (System.getProperty("naming") != null) p.naming = Integer.parseInt(System.getProperty("naming"));
+            p.output = p.exportFinal();
+        }
+        if (System.getProperty("retarget") != null) {
+            com.star4droid.mobirig.rig.Retarget rt = new com.star4droid.mobirig.rig.Retarget(Files.readAllBytes(new File(System.getProperty("retarget")).toPath()), "imported");
+            float bestErr = Float.MAX_VALUE; String bestName = "";
+            for (String c : com.star4droid.mobirig.rig.Poses.CLIPS) {
+                com.star4droid.mobirig.rig.Clip b = com.star4droid.mobirig.rig.Poses.builtin(c);
+                float err = 0;
+                for (int f = 0; f < 10; f++) {
+                    float t = rt.length() * f / 10f;
+                    Quaternion[] a = rt.sample(p.skeleton, t, new Vector3()), q = b.sample(p.skeleton, t, new Vector3());
+                    com.badlogic.gdx.math.Matrix4[] ga = com.star4droid.mobirig.rig.Poses.world(p.skeleton, a), gq = com.star4droid.mobirig.rig.Poses.world(p.skeleton, q);
+                    for (int j = 0; j < a.length; j++) err = Math.max(err, ga[j].getTranslation(new Vector3()).dst(gq[j].getTranslation(new Vector3())) / p.mesh.height());
+                }
+                if (err < bestErr) { bestErr = err; bestName = c; }
+            }
+            System.out.printf("RETARGET matched=%d length=%.2f closest=%s maxJointError=%.2f%% of height%n", rt.matched, rt.length(), bestName, bestErr * 100);
+        }
         if (com.star4droid.mobirig.rig.Quality.dumped != null) {
             float[] d = com.star4droid.mobirig.rig.Quality.dumped;
             java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(8 + d.length * 8 + p.mesh.tris.length * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN);

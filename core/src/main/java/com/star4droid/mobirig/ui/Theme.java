@@ -30,7 +30,8 @@ public class Theme implements Disposable {
         I_LAYERS = '', I_HEIGHT = '', I_FLOOR = '', I_ROT_L = '', I_ROT_R = '',
         I_UP = '', I_BOLT = '', I_SPARK = '', I_TUNE = '', I_RUN = '',
         I_YOGA = '', I_HAND = '', I_PEOPLE = '', I_3D = '', I_360 = '',
-        I_SIDE = '', I_SETTINGS = '', I_BONES = '', I_TIMER = '', I_ROTATE = '', I_MORE = '\ue5cf', I_LESS = '\ue5ce', I_PALM = '\ue769';
+        I_SIDE = '', I_SETTINGS = '', I_BONES = '', I_TIMER = '', I_ROTATE = '', I_MORE = '\ue5cf', I_LESS = '\ue5ce', I_PALM = '\ue769',
+        I_UNDO = '\ue166', I_REDO = '\ue15a', I_BRUSH = '\ue3ae', I_PLAY = '\ue037', I_PAUSE = '\ue034', I_TURN = '\ue84d', I_ADD = '\ue145', I_SUB = '\ue15b', I_SMOOTH = '\ue3a5', I_MOVIE = '\ue02c', I_IMPORT = '\ue2c6', I_TWIST = '\ue86a', I_EXPORT_FMT = '\ue8d4', I_JUMP = '\uea33', I_WAVE = '\ue766', I_IDLE = '\ue92c', I_SPEED = '\ue566', I_RADIUS = '\ue39e', I_STRENGTH = '\ue91c', I_MIRROR_PAINT = '\ue3e8';
 
     public final float density;
     public final Color bg = hex(0x0E1016), surface = hex(0x161922), surface2 = hex(0x1E222D), surface3 = hex(0x272C39),

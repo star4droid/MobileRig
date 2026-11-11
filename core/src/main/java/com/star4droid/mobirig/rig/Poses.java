@@ -28,6 +28,8 @@ public class Poses {
         final Array<Rot> rots = new Array<>();
         final boolean mirror;
         boolean fist;
+        /** Hips lift in leg lengths (clips). */
+        public float hipsY;
 
         Pose(String name, boolean mirror) {
             this.name = name;
@@ -54,7 +56,7 @@ public class Poses {
         p.add(new Pose("Arms up", true).r("LeftArm", 0, 0, 1, 70 + drop));
         p.add(new Pose("Reach", true).r("LeftArm", 0, 1, 0, -80));
         p.add(new Pose("Elbows bent", true).r("LeftArm", 0, 0, 1, -(60 - drop)).r("LeftForeArm", 0, 1, 0, -110));
-        p.add(new Pose("Wrist twist", true).r("LeftForeArm", 1, 0, 0, 70));
+        p.add(new Pose("Wrist twist", true).r("LeftHand", 1, 0, 0, 75));
         p.add(new Pose("Squat", true).r("LeftUpLeg", 1, 0, 0, -95).r("LeftLeg", 1, 0, 0, 120).r("LeftFoot", 1, 0, 0, -25));
         p.add(new Pose("Kick", false).r("LeftUpLeg", 1, 0, 0, -80).r("RightUpLeg", 1, 0, 0, 35).r("RightLeg", 1, 0, 0, 60));
         if (sk.index("LeftHandIndex1") >= 0 || sk.index("LeftHandThumb1") >= 0) {
@@ -98,6 +100,7 @@ public class Poses {
             }
         }
         if (pose.fist) addFist(sk, worldDelta);
+        driveRoll(sk, worldDelta);
         // world-axis delta D on joint j: new local = local * (W^-1 * D * W)
         for (int j = 0; j < n; j++) {
             Quaternion w = sk.joints.get(j).worldRot;
@@ -139,6 +142,113 @@ public class Poses {
             float a = thumb ? angT[seg] : ang[seg];
             add(sk, worldDelta, jt.name, axis, a);
             add(sk, worldDelta, "Right" + jt.name.substring(4), new Vector3(axis.x, -axis.y, -axis.z), a);
+        }
+    }
+
+    /** Forearm roll bones take half of the hand's twist around the forearm, so the wrist does not pinch. */
+    static void driveRoll(Skeleton sk, Quaternion[] worldDelta) {
+        for (String pre : new String[]{"Left", "Right"}) {
+            int roll = sk.index(pre + "ForeArmRoll"), hand = sk.index(pre + "Hand"), fa = sk.index(pre + "ForeArm");
+            if (roll < 0 || hand < 0 || fa < 0) continue;
+            worldDelta[roll].set(halfTwist(worldDelta[hand], new Vector3(sk.joints.get(hand).pos).sub(sk.joints.get(fa).pos).nor()));
+        }
+    }
+
+    static Quaternion halfTwist(Quaternion d, Vector3 axis) {
+        float dot = d.x * axis.x + d.y * axis.y + d.z * axis.z;
+        Quaternion tw = new Quaternion(axis.x * dot, axis.y * dot, axis.z * dot, d.w);
+        if (tw.len2() < 1e-10f) return new Quaternion();
+        tw.nor();
+        return new Quaternion().slerp(tw, 0.5f);
+    }
+
+    public static float legLength(Skeleton sk) {
+        Skeleton.Joint a = sk.get("LeftUpLeg"), b = sk.get("LeftLeg"), c = sk.get("LeftFoot");
+        return a.pos.dst(b.pos) + b.pos.dst(c.pos);
+    }
+
+    // ------------------------------------------------------------------ built-in clips
+
+    public static final String[] CLIPS = {"Idle", "Walk", "Run", "Jump", "Wave"};
+
+    public static Clip builtin(final String name) {
+        final float len = name.equals("Idle") ? 3f : name.equals("Walk") ? MathUtils.PI2 / 4.2f : name.equals("Run") ? MathUtils.PI2 / 9f
+            : name.equals("Jump") ? 1.5f : 2f;
+        return new Clip() {
+            @Override
+            public String name() {
+                return name;
+            }
+
+            @Override
+            public float length() {
+                return len;
+            }
+
+            @Override
+            public Quaternion[] sample(Skeleton sk, float t, Vector3 hipsOffset) {
+                Pose p = clipPose(sk, name, t % len, len);
+                if (hipsOffset != null) hipsOffset.set(0, p.hipsY * legLength(sk), 0);
+                return localRotations(sk, p);
+            }
+        };
+    }
+
+    private static float sm(float a, float b, float x) {
+        float t = (x - a) / (b - a);
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        return t * t * (3 - 2 * t);
+    }
+
+    static Pose clipPose(Skeleton sk, String name, float t, float len) {
+        float drop = armDrop(sk);
+        float ph = MathUtils.PI2 * t / len;
+        float s = MathUtils.sin(ph), c = MathUtils.cos(ph);
+        Pose p = new Pose(name, false);
+        float down = 72 - drop;
+        switch (name) {
+            case "Walk":
+                return walk(sk, t);
+            case "Run": {
+                p.r("LeftArm", 0, 0, 1, -(down + 4)).r("RightArm", 0, 0, 1, down + 4)
+                    .r("LeftArm", 1, 0, 0, 45 * s).r("RightArm", 1, 0, 0, -45 * s)
+                    .r("LeftForeArm", 0, 1, 0, -80).r("RightForeArm", 0, 1, 0, 80)
+                    .r("LeftUpLeg", 1, 0, 0, -12 - 42 * s).r("RightUpLeg", 1, 0, 0, -12 + 42 * s)
+                    .r("LeftLeg", 1, 0, 0, 20 + 75 * Math.max(0, c)).r("RightLeg", 1, 0, 0, 20 + 75 * Math.max(0, -c))
+                    .r("Spine", 1, 0, 0, 10).r("Spine1", 0, 1, 0, 10 * s).r("Head", 1, 0, 0, -8);
+                p.hipsY = -0.04f + 0.035f * Math.abs(s);
+                return p;
+            }
+            case "Jump": {
+                float u = t / len;
+                float k = sm(0f, 0.22f, u) * (1 - sm(0.22f, 0.32f, u)) + 0.65f * sm(0.68f, 0.76f, u) * (1 - sm(0.78f, 1f, u));
+                float air = u > 0.32f && u < 0.70f ? (u - 0.32f) / 0.38f : -1;
+                float tuck = air >= 0 ? 0.3f * MathUtils.sin(MathUtils.PI * air) : 0;
+                float kk = k + tuck;
+                float a = 55 * kk, knee = 105 * kk;
+                p.r("LeftUpLeg", 1, 0, 0, -a).r("RightUpLeg", 1, 0, 0, -a).r("LeftLeg", 1, 0, 0, knee).r("RightLeg", 1, 0, 0, knee)
+                    .r("LeftFoot", 1, 0, 0, -(knee - a) * 0.6f).r("RightFoot", 1, 0, 0, -(knee - a) * 0.6f)
+                    .r("Spine", 1, 0, 0, 22 * k)
+                    .r("LeftArm", 0, 0, 1, -down).r("RightArm", 0, 0, 1, down);
+                float swing = 40 * k - (air >= 0 ? 120 * MathUtils.sin(MathUtils.PI * air) : 0);
+                p.r("LeftArm", 1, 0, 0, swing).r("RightArm", 1, 0, 0, swing);
+                float dropK = 1 - (MathUtils.cosDeg(55 * k) + MathUtils.cosDeg(50 * k)) * 0.5f;
+                p.hipsY = -dropK + (air >= 0 ? 0.55f * 4 * air * (1 - air) : 0);
+                return p;
+            }
+            case "Wave": {
+                p.r("LeftArm", 0, 0, 1, -down).r("RightArm", 0, 0, 1, -(35 + drop))
+                    .r("RightForeArm", 0, 0, 1, -(55 + 28 * MathUtils.sin(ph * 2)))
+                    .r("Spine1", 0, 0, 1, -3).r("Head", 0, 0, 1, -6 + 2 * s).r("Spine2", 1, 0, 0, 1.2f * s);
+                return p;
+            }
+            default: { // Idle
+                p.r("LeftArm", 0, 0, 1, -(down + 1.5f * s)).r("RightArm", 0, 0, 1, down + 1.5f * s)
+                    .r("LeftForeArm", 0, 1, 0, -12).r("RightForeArm", 0, 1, 0, 12)
+                    .r("Spine1", 1, 0, 0, 1.5f * s).r("Spine2", 1, 0, 0, 1.5f * s).r("Neck", 1, 0, 0, -1.5f * s)
+                    .r("Head", 0, 1, 0, 4 * MathUtils.sin(ph * 0.5f + 0.4f)).r("Spine", 0, 0, 1, 1.2f * c);
+                return p;
+            }
         }
     }
 

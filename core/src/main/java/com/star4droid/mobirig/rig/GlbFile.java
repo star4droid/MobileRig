@@ -184,11 +184,14 @@ public class GlbFile {
         return append(array("bufferViews"), bv);
     }
 
+    /** Set while writing animation data: those buffer views must not be marked as vertex data. */
+    public boolean plainViews;
+
     public int addFloatAccessor(float[] data, String type, boolean minMax) {
         int nc = numComponents(type);
         ByteBuffer b = ByteBuffer.allocate(data.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         for (float f : data) b.putFloat(f);
-        int bv = addBufferView(b.array(), type.equals("MAT4") ? 0 : 34962);
+        int bv = addBufferView(b.array(), type.equals("MAT4") || plainViews ? 0 : 34962);
         JsonValue acc = accessorJson(bv, FLOAT, data.length / nc, type);
         if (minMax) {
             float[] mn = new float[nc], mx = new float[nc];

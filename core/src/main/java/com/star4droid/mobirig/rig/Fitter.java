@@ -20,6 +20,8 @@ public class Fitter {
     public boolean fingers = true;
     /** Set after fit() when fingers were found. */
     public FingerDetector fingerDetector;
+    /** Adds forearm roll bones. */
+    public boolean twist;
 
     public Fitter(RigMesh mesh) {
         this.mesh = mesh;
@@ -104,12 +106,30 @@ public class Fitter {
             if (c >= 0 && jt.tail.isZero()) jt.tail.set(s.joints.get(c).pos);
         }
         if (fingers) {
-            FingerDetector fd = new FingerDetector();
-            if (fd.detect(mesh, hand, tip)) {
+            // the wrist marker is never exact: read the hand from several start lines and keep the best
+            FingerDetector fd = null;
+            for (float back : new float[]{0.15f, 0f, 0.08f, 0.22f, 0.30f}) {
+                FingerDetector t = new FingerDetector();
+                t.back = back;
+                t.detect(mesh, hand, tip);
+                if (fd == null || t.fingers.size > fd.fingers.size) fd = t;
+                if (fd.fingers.size >= 5) break;
+            }
+            if (fd.fingers.size >= 2) {
                 fd.addJoints(s);
                 fingerDetector = fd;
+                notes.addAll(fd.notes);
+            } else notes.add("No separate fingers found (mitten hand?): the hand is rigged as one bone");
+        }
+        if (twist) {
+            for (int side = 1; side >= -1; side -= 2) {
+                String pre = side > 0 ? "Left" : "Right";
+                Skeleton.Joint fa = s.get(pre + "ForeArm"), hd = s.get(pre + "Hand");
+                Skeleton.Joint r = s.joints.get(s.add(pre + "ForeArmRoll", s.index(pre + "ForeArm"), side));
+                r.pos.set(fa.pos).lerp(hd.pos, 0.5f);
+                r.tail.set(hd.pos);
+                r.aim = new Vector3(hd.pos);
             }
-            notes.addAll(fd.notes);
         }
         // the hips bone covers the pelvis down to the thigh heads
         float hipLow = Float.isNaN(crotch) ? upY : (upY + crotch) * 0.5f;

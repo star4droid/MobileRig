@@ -49,6 +49,7 @@ public class FingerDetector {
     /** Unit vector out of the palm of the left hand, measured from the shape (not assumed). */
     public final Vector3 palm = new Vector3(0, -1, 0);
     public static boolean debug;
+    public float back = 0.15f;
     /** Half width of the weight blend at each finger joint, as a fraction of the finger length. */
     public static float BAND = 0.14f;
 
@@ -71,6 +72,8 @@ public class FingerDetector {
         int nw = mesh.weldedCount;
         float[] p = mesh.wpos;
         Vector3 d = new Vector3(tipGuess).sub(wrist).nor();
+        // start a little up the forearm: a wrist marker placed too far onto the hand must not hide the thumb
+        wrist = new Vector3(wrist).mulAdd(d, -back * wrist.dst(tipGuess));
         // hand extent along the hand direction
         lh = 0;
         float reach = wrist.dst(tipGuess) * 1.6f;

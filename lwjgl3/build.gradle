@@ -251,3 +251,11 @@ tasks.withType(JavaExec.class).configureEach {
 if(enableGraalNative == 'true') {
   apply from: file("nativeimage.gradle")
 }
+// Rigs the CC0 test bodies in testdata/ and fails when quality drops below the bar.
+tasks.register('qualityGate', JavaExec) {
+  dependsOn classes
+  classpath = sourceSets.main.runtimeClasspath
+  mainClass = 'com.star4droid.mobirig.lwjgl3.Bench'
+  args 'gate', rootProject.file('testdata').absolutePath
+  maxHeapSize = '2g'
+}

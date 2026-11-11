@@ -317,15 +317,15 @@ public class Main extends ApplicationAdapter {
         }).checked(() -> fingersEnabled));
         p.tools.add(new Hud.Item(Theme.I_FIT, "Fit view", ortho::reset));
         // turning the model: a bare icon strip on top of the view
-        p.viewIcons.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> turnInMarkers(Vector3.X)));
-        p.viewIcons.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> turnInMarkers(Vector3.Y)));
-        p.viewIcons.add(new Hud.Item(Theme.I_ROT_R, "Rotate Z", () -> turnInMarkers(Vector3.Z)));
-        p.viewIcons.add(new Hud.Item(Theme.I_FLIP, "Face me", () -> turnInMarkers(null)));
+        p.viewIcons.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> turnInMarkers(Vector3.X)).tip("Tip the model 90 degrees forward (X axis)"));
+        p.viewIcons.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> turnInMarkers(Vector3.Y)).tip("Turn the model 90 degrees (Y axis)"));
+        p.viewIcons.add(new Hud.Item(Theme.I_ROT_R, "Rotate Z", () -> turnInMarkers(Vector3.Z)).tip("Roll the model 90 degrees sideways (Z axis)"));
+        p.viewIcons.add(new Hud.Item(Theme.I_FLIP, "Face me", () -> turnInMarkers(null)).tip("Turn the model around so it faces you"));
         p.viewIcons.add(new Hud.Item(Theme.I_MIRROR, "Mirror", () -> {
             mirror();
             restartMarkers();
             hud.toast(mirrored ? "Mirrored left and right." : "Mirror off.", false);
-        }).checked(() -> mirrored));
+        }).checked(() -> mirrored).tip("Swap left and right"));
         p.secondary = new Hud.Item(Theme.I_BACK, "Back", this::backToOrient);
         p.primary = new Hud.Item(Theme.I_SPARK, "Rig it", this::startRig);
         hud.show(1, p);
@@ -605,6 +605,10 @@ public class Main extends ApplicationAdapter {
             }
             pipeline.markers.constrainAll(pipeline.mesh);
         }
+        String ui = System.getProperty("mobirig.ui", "");
+        if (ui.contains("strip") || ui.contains("info")) hud.devOpen(ui.contains("strip"), ui.contains("info"));
+        if (ui.contains("status")) hud.toast("Markers guessed from the shape. Check each one.", false);
+        if (ui.contains("dialog")) hud.toast("The arms are not separated from the body. Move the Shoulder marker to the armpit and try again.", true);
         if (devPose != null && devPose.equals("Markers")) return;
         if (devPose != null && devPose.equals("Guide")) {
             Gdx.app.postRunnable(guide::show);

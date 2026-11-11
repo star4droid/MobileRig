@@ -14,6 +14,41 @@ import com.badlogic.gdx.utils.ObjectMap;
  */
 public class GlbExporter {
     public String prefix = "mixamorig:";
+    /** 0 Mixamo ("mixamorig:Hips"), 1 plain ("Hips", Unity humanoid friendly), 2 Unreal ("pelvis", "thigh_l"). */
+    public int naming;
+    public com.badlogic.gdx.utils.Array<Clip> clips;
+
+    public String boneName(String n) {
+        if (naming == 0) return prefix + n;
+        if (naming == 1) return n;
+        String side = n.startsWith("Left") ? "_l" : n.startsWith("Right") ? "_r" : "";
+        String b = side.isEmpty() ? n : n.substring(side.equals("_l") ? 4 : 5);
+        switch (b) {
+            case "Hips": return "pelvis";
+            case "Spine": return "spine_01";
+            case "Spine1": return "spine_02";
+            case "Spine2": return "spine_03";
+            case "Neck": return "neck_01";
+            case "Head": return "head";
+            case "HeadTop_End": return "head_end";
+            case "Shoulder": return "clavicle" + side;
+            case "Arm": return "upperarm" + side;
+            case "ForeArm": return "lowerarm" + side;
+            case "ForeArmRoll": return "lowerarm_twist_01" + side;
+            case "Hand": return "hand" + side;
+            case "UpLeg": return "thigh" + side;
+            case "Leg": return "calf" + side;
+            case "Foot": return "foot" + side;
+            case "ToeBase": return "ball" + side;
+            case "Toe_End": return "ball_end" + side;
+            default:
+                if (b.startsWith("Hand") && b.length() > 5) {
+                    String f = b.substring(4, b.length() - 1).toLowerCase();
+                    return f + "_0" + b.charAt(b.length() - 1) + side;
+                }
+                return b.toLowerCase() + side;
+        }
+    }
 
     public byte[] export(byte[] source, RigMesh mesh, Skeleton sk, int[] joints, float[] weights) {
         return export(source, mesh, sk, joints, weights, null);
@@ -154,16 +189,17 @@ public class GlbExporter {
         for (int ji = 0; ji < nj; ji++) {
             Skeleton.Joint jt = sk.joints.get(ji);
             JsonValue n = new JsonValue(JsonValue.ValueType.object);
-            n.addChild("name", new JsonValue(prefix + jt.name));
+            n.addChild("name", new JsonValue(boneName(jt.name)));
             sk.localTranslation(ji, t);
             sk.localRotation(ji, q).nor();
             n.addChild("translation", GlbFile.floatArray(new float[]{t.x, t.y, t.z}));
-            n.addChild("rotation", GlbFile.floatArray(new float[]{q.x, q.y, q.z, q.w}));
+            n.addChild("rotation", GlbFile.floatArray(new float[]{unit(q.x), unit(q.y), unit(q.z), unit(q.w)}));
             com.badlogic.gdx.utils.IntArray ch = new com.badlogic.gdx.utils.IntArray();
             for (int c = 0; c < nj; c++) if (sk.joints.get(c).parent == ji) ch.add(base + c);
             if (ch.size > 0) n.addChild("children", GlbFile.intArray(ch.toArray()));
             nodes.addChild(n);
             sk.worldMatrix(ji, wm).inv();
+            wm.val[3] = 0; wm.val[7] = 0; wm.val[11] = 0; wm.val[15] = 1; // exact affine last row
             System.arraycopy(wm.val, 0, ibm, ji * 16, 16);
         }
         int ibmAcc = glb.addFloatAccessor(ibm, "MAT4", false);
@@ -184,6 +220,13 @@ public class GlbExporter {
         json.remove("skins");
         json.addChild("skins", skins);
         json.remove("animations");
+        if (clips != null && clips.size > 0) {
+            JsonValue anims = new JsonValue(JsonValue.ValueType.array);
+            glb.plainViews = true;
+            for (Clip clip : clips) anims.addChild(animation(glb, sk, clip, base));
+            glb.plainViews = false;
+            json.addChild("animations", anims);
+        }
         json.remove("cameras");
 
         JsonValue scenes = new JsonValue(JsonValue.ValueType.array);
@@ -205,6 +248,71 @@ public class GlbExporter {
             asset.addChild("generator", new JsonValue("MobiRig"));
         }
         return glb.write();
+    }
+
+    /** Bakes a clip at 30 fps: rotation tracks for the joints that move, plus the hips translation. */
+    private JsonValue animation(GlbFile glb, Skeleton sk, Clip clip, int base) {
+        int nj = sk.joints.size;
+        int frames = Math.max(2, (int) Math.ceil(clip.length() * 30f) + 1);
+        float[] times = new float[frames];
+        float[][] rot = new float[nj][frames * 4];
+        float[] hips = new float[frames * 3];
+        Vector3 off = new Vector3(), rest = new Vector3();
+        sk.localTranslation(0, rest);
+        boolean hipsMove = false;
+        for (int f = 0; f < frames; f++) {
+            times[f] = clip.length() * f / (frames - 1);
+            off.setZero();
+            Quaternion[] q = clip.sample(sk, f == frames - 1 ? 0 : times[f], off);
+            for (int j = 0; j < nj; j++) {
+                Quaternion x = q[j].nor();
+                if (f > 0) {
+                    float d = x.x * rot[j][f * 4 - 4] + x.y * rot[j][f * 4 - 3] + x.z * rot[j][f * 4 - 2] + x.w * rot[j][f * 4 - 1];
+                    if (d < 0) x.set(-x.x, -x.y, -x.z, -x.w);
+                }
+                rot[j][f * 4] = unit(x.x); rot[j][f * 4 + 1] = unit(x.y); rot[j][f * 4 + 2] = unit(x.z); rot[j][f * 4 + 3] = unit(x.w);
+            }
+            hips[f * 3] = rest.x + off.x; hips[f * 3 + 1] = rest.y + off.y; hips[f * 3 + 2] = rest.z + off.z;
+            if (off.len2() > 1e-10f) hipsMove = true;
+        }
+        JsonValue a = new JsonValue(JsonValue.ValueType.object);
+        a.addChild("name", new JsonValue(clip.name()));
+        JsonValue samplers = new JsonValue(JsonValue.ValueType.array), channels = new JsonValue(JsonValue.ValueType.array);
+        int tAcc = glb.addFloatAccessor(times, "SCALAR", true);
+        Quaternion r0 = new Quaternion();
+        for (int j = 0; j < nj; j++) {
+            sk.localRotation(j, r0).nor();
+            boolean moves = false;
+            for (int f = 0; f < frames && !moves; f++) {
+                float d = Math.abs(r0.x * rot[j][f * 4] + r0.y * rot[j][f * 4 + 1] + r0.z * rot[j][f * 4 + 2] + r0.w * rot[j][f * 4 + 3]);
+                if (d < 0.99999f) moves = true;
+            }
+            if (!moves) continue;
+            addChannel(samplers, channels, tAcc, glb.addFloatAccessor(rot[j], "VEC4", false), base + j, "rotation");
+        }
+        if (hipsMove) addChannel(samplers, channels, tAcc, glb.addFloatAccessor(hips, "VEC3", false), base, "translation");
+        a.addChild("samplers", samplers);
+        a.addChild("channels", channels);
+        return a;
+    }
+
+    private static float unit(float v) {
+        return v > 1 ? 1 : (v < -1 ? -1 : v);
+    }
+
+    private static void addChannel(JsonValue samplers, JsonValue channels, int in, int out, int node, String path) {
+        JsonValue sm = new JsonValue(JsonValue.ValueType.object);
+        sm.addChild("input", new JsonValue(in));
+        sm.addChild("output", new JsonValue(out));
+        sm.addChild("interpolation", new JsonValue("LINEAR"));
+        int si = GlbFile.append(samplers, sm);
+        JsonValue ch = new JsonValue(JsonValue.ValueType.object);
+        ch.addChild("sampler", new JsonValue(si));
+        JsonValue tg = new JsonValue(JsonValue.ValueType.object);
+        tg.addChild("node", new JsonValue(node));
+        tg.addChild("path", new JsonValue(path));
+        ch.addChild("target", tg);
+        channels.addChild(ch);
     }
 
     private static void setAttr(JsonValue obj, String name, int accessor) {
