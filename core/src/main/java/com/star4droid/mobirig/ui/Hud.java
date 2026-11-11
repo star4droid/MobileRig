@@ -74,6 +74,8 @@ public class Hud {
         public final Array<Item> chips = new Array<>(), tools = new Array<>();
         /** Icon-only strip shown at the top of the 3D view (no labels). */
         public final Array<Item> viewIcons = new Array<>();
+        /** Segmented row at the top of the panel. */
+        public final Array<Item> tabs = new Array<>();
         public Item primary, secondary;
         /** Largest share of the screen height the bottom sheet may take (phones in portrait). */
         public float maxHeight = 0.56f;
@@ -301,6 +303,26 @@ public class Hud {
         Table content = new Table();
         content.top().left();
         content.pad(0, 16, 8, 16);
+        if (panel.tabs.size > 0) {
+            // segmented control: icon + label when there is room, label only when narrow
+            Table tabs = new Table();
+            float cellW = (inner - 6 * (panel.tabs.size - 1)) / panel.tabs.size;
+            for (int i = 0; i < panel.tabs.size; i++) {
+                Item it = panel.tabs.get(i);
+                boolean on = it.checked != null && it.checked.on();
+                Button b = new Button(new Button.ButtonStyle(t.chip, t.chipDown, t.chipOn));
+                b.pad(0);
+                b.setChecked(on);
+                if (cellW >= 112) b.add(icon(it.icon, t.iconsSmall, on ? t.primaryHi : t.textDim)).padRight(6);
+                Label lb = label(it.label, on ? t.smallBold : t.small, on ? t.text : t.textDim);
+                lb.setEllipsis(true);
+                lb.setAlignment(Align.center);
+                b.add(lb).minWidth(0);
+                wire(b, it);
+                tabs.add(b).width(cellW).height(44).padRight(i == panel.tabs.size - 1 ? 0 : 6);
+            }
+            content.add(tabs).left().padTop(2).padBottom(8).row();
+        }
         if (panel.hint != null && !panel.hint.isEmpty()) {
             Label hint = label(Theme.safe(panel.hint), t.body, t.textDim);
             hint.setWrap(true);

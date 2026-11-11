@@ -23,6 +23,7 @@ import com.badlogic.gdx.graphics.g3d.model.NodePart;
 import com.badlogic.gdx.graphics.glutils.HdpiUtils;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.input.GestureDetector;
+import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Matrix4;
 import com.badlogic.gdx.math.Quaternion;
 import com.badlogic.gdx.math.Rectangle;
@@ -34,7 +35,10 @@ import com.badlogic.gdx.utils.JsonReader;
 import com.badlogic.gdx.utils.JsonValue;
 import com.badlogic.gdx.utils.ScreenUtils;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
+import com.star4droid.mobirig.rig.Clip;
 import com.star4droid.mobirig.rig.GlbExporter;
+import com.star4droid.mobirig.rig.Retarget;
+import com.star4droid.mobirig.rig.WeightPaint;
 import com.star4droid.mobirig.rig.Markers;
 import com.star4droid.mobirig.rig.Poses;
 import com.star4droid.mobirig.rig.RigException;
@@ -96,8 +100,21 @@ public class Main extends ApplicationAdapter {
 
     private Node[] jointNodes;
     private Pose currentPoseHolder = new Pose();
-    private boolean walking, showBones = true;
-    private float walkTime;
+    private boolean showBones = true;
+    private Clip playing, imported;
+    private float clipTime;
+    private final Vector3 hipsOff = new Vector3(), hipsRest = new Vector3();
+    private int testTab; // 0 animate, 1 paint, 2 export
+    private WeightPaint paint;
+    private WeightPaint.Mode paintMode = WeightPaint.Mode.ADD;
+    private float brush = 0.06f;
+    private boolean paintMirror = true, paintNav, pickBone, brushShown;
+    private final Vector3 brushAt = new Vector3();
+    private int naming;
+    private final boolean[] exportClip = new boolean[Poses.CLIPS.length];
+    private boolean exportImported, twistEnabled;
+    private final Array<float[]> undo = new Array<>(), redo = new Array<>();
+    private float[] pendingMarkers, pendingOrient;
     private int weightBone = -2; // -2 off, -1 all bones, >=0 one bone
     private Array<Poses.Pose> poses;
     private String rigSummary = "";
@@ -199,6 +216,7 @@ public class Main extends ApplicationAdapter {
             mx.addProcessor(new GestureDetector(ortho));
             mx.addProcessor(ortho);
         } else if (step != Step.RIGGING) {
+            if (step == Step.TEST && testTab == 1 && !paintNav) mx.addProcessor(new PaintInput());
             mx.addProcessor(new GestureDetector(orbit));
             mx.addProcessor(orbit);
         }
@@ -225,6 +243,7 @@ public class Main extends ApplicationAdapter {
                 }
             }
             if (found == null) return false;
+            pushUndo();
             hud.setSheetHidden(true);
             dragging = found;
             dragMirror = mir;
@@ -249,7 +268,146 @@ public class Main extends ApplicationAdapter {
             if (dragging == null) return false;
             dragging = null;
             hud.setSheetHidden(false);
+            saveSession();
             return true;
+        }
+    }
+
+    /** Paints weights with one finger; a miss falls through to the camera. */
+    private class PaintInput extends InputAdapter {
+        private final Vector3 last = new Vector3(), hit = new Vector3();
+        private boolean down;
+
+        private boolean pick(int x, int y) {
+            return paint != null && paint.pick(camera.getPickRay(x, y, view.x, view.y, view.width, view.height), hit);
+        }
+
+        private void dab() {
+            float r = brush * pipeline.mesh.height();
+            paint.dab(hit, r, weightBone, paintMode, paintMode == WeightPaint.Mode.SMOOTH ? 0.6f : 0.25f, paintMirror);
+            last.set(hit);
+            brushAt.set(hit);
+            brushShown = true;
+        }
+
+        @Override
+        public boolean touchDown(int x, int y, int pointer, int button) {
+            if (pointer > 0 || !pick(x, y)) return false;
+            if (pickBone) {
+                int b = paint.boneAt(hit);
+                pickBone = false;
+                if (b >= 0) setWeightView(b);
+                return true;
+            }
+            if (weightBone < 0) return true;
+            paint.begin();
+            down = true;
+            dab();
+            return true;
+        }
+
+        @Override
+        public boolean touchDragged(int x, int y, int pointer) {
+            if (!down) return false;
+            if (pick(x, y) && hit.dst(last) > brush * pipeline.mesh.height() * 0.35f) dab();
+            return true;
+        }
+
+        @Override
+        public boolean touchUp(int x, int y, int pointer, int button) {
+            if (!down) return false;
+            down = false;
+            brushShown = false;
+            setWeightView(weightBone);
+            return true;
+        }
+    }
+
+    // ------------------------------------------------------------------ undo and saved sessions
+
+    private float[] markerState() {
+        float[] f = new float[18];
+        for (int i = 0; i < 6; i++) {
+            Vector3 v = pipeline.markers.p[i];
+            f[i * 3] = v.x; f[i * 3 + 1] = v.y; f[i * 3 + 2] = v.z;
+        }
+        return f;
+    }
+
+    private void setMarkers(float[] f) {
+        for (int i = 0; i < 6; i++) pipeline.markers.p[i].set(f[i * 3], f[i * 3 + 1], f[i * 3 + 2]);
+    }
+
+    private void pushUndo() {
+        if (pipeline == null || pipeline.markers == null) return;
+        undo.add(markerState());
+        redo.clear();
+        if (undo.size > 60) undo.removeIndex(0);
+    }
+
+    private void undoMarkers(boolean again) {
+        Array<float[]> from = again ? redo : undo, to = again ? undo : redo;
+        if (from.size == 0 || pipeline == null) {
+            hud.toast(again ? "Nothing to redo." : "Nothing to undo.", false);
+            return;
+        }
+        to.add(markerState());
+        setMarkers(from.pop());
+        saveSession();
+        showMarkers();
+    }
+
+    private String sessionKey() {
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(modelBytes, 0, Math.min(modelBytes.length, 1 << 16));
+        return "s" + Long.toHexString(crc.getValue()) + "_" + modelBytes.length;
+    }
+
+    /** Remembers orientation, options and markers for this model, so closing the app loses nothing. */
+    private void saveSession() {
+        if (modelBytes == null || scene == null) return;
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (float v : scene.modelInstance.transform.val) sb.append(v).append(' ');
+            sb.append(';').append(mirrored ? 1 : 0).append(fingersEnabled ? 1 : 0).append(twistEnabled ? 1 : 0).append(';');
+            if (pipeline != null && pipeline.markers != null && java.util.Arrays.equals(pipeline.orient.val, scene.modelInstance.transform.val))
+                for (float v : markerState()) sb.append(v).append(' ');
+            com.badlogic.gdx.Preferences pr = Gdx.app.getPreferences("mobirig-sessions");
+            pr.putString(sessionKey(), sb.toString());
+            pr.flush();
+        } catch (RuntimeException e) {
+            Gdx.app.error("MobiRig", "session not saved", e);
+        }
+    }
+
+    private boolean restoreSession() {
+        pendingMarkers = null;
+        try {
+            String v = Gdx.app.getPreferences("mobirig-sessions").getString(sessionKey(), "");
+            String[] parts = v.split(";", -1);
+            if (parts.length < 3) return false;
+            String[] o = parts[0].trim().split(" ");
+            if (o.length != 16) return false;
+            float[] m = new float[16];
+            for (int i = 0; i < 16; i++) m[i] = Float.parseFloat(o[i]);
+            scene.modelInstance.transform.set(m);
+            mirrored = parts[1].charAt(0) == '1';
+            fingersEnabled = parts[1].charAt(1) == '1';
+            twistEnabled = parts[1].charAt(2) == '1';
+            for (Material mt : scene.modelInstance.materials) {
+                if (mirrored) mt.set(IntAttribute.createCullFace(GL20.GL_NONE));
+                else mt.remove(IntAttribute.CullFace);
+            }
+            String[] k = parts[2].trim().split(" ");
+            if (k.length == 18) {
+                pendingMarkers = new float[18];
+                for (int i = 0; i < 18; i++) pendingMarkers[i] = Float.parseFloat(k[i]);
+                pendingOrient = m;
+            }
+            frameModel();
+            return true;
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 
@@ -301,21 +459,34 @@ public class Main extends ApplicationAdapter {
             p.chips.add(new Hud.Item(Theme.I_PERSON, k.label, () -> {
                 selected = k;
                 showMarkers();
-            }).dot(k.center ? theme.amber : theme.cyan).checked(() -> selected == k));
+            }).dot(k.center ? theme.amber : theme.cyan).checked(() -> selected == k).tip(k.label + ": " + k.hint));
         }
         p.toolsTitle = "Tools";
-        p.tools.add(new Hud.Item(Theme.I_ERROR, "Guide", guide::show));
+        p.tools.add(new Hud.Item(Theme.I_ERROR, "Guide", guide::show).tip("Shows where each marker goes"));
         p.tools.add(new Hud.Item(Theme.I_MAGIC, "Guess", () -> {
+            pushUndo();
             pipeline.guessMarkers();
-            hud.toast("Markers guessed from the shape. Check each one.", false);
-        }));
+            saveSession();
+            showMarkers();
+            guessStatus();
+        }).tip("Finds all markers from the model's shape"));
+        p.tools.add(new Hud.Item(Theme.I_UNDO, "Undo", () -> undoMarkers(false)).tip("Take back the last marker move"));
+        p.tools.add(new Hud.Item(Theme.I_REDO, "Redo", () -> undoMarkers(true)).tip("Redo the move you took back"));
         p.tools.add(new Hud.Item(Theme.I_PALM, "Fingers", () -> {
             fingersEnabled = !fingersEnabled;
+            saveSession();
+            showMarkers();
             hud.toast(fingersEnabled ? "Fingers will be detected and rigged (Mixamo finger bones)."
                 : "Fingers off: each hand is one bone.", false);
+        }).checked(() -> fingersEnabled).tip("Detect fingers and add finger bones"));
+        p.tools.add(new Hud.Item(Theme.I_TWIST, "Wrist roll", () -> {
+            twistEnabled = !twistEnabled;
+            saveSession();
             showMarkers();
-        }).checked(() -> fingersEnabled));
-        p.tools.add(new Hud.Item(Theme.I_FIT, "Fit view", ortho::reset));
+            hud.toast(twistEnabled ? "Forearm roll bones on: wrists twist without pinching. Your engine must drive them (half of the hand twist); the animations exported here already do."
+                : "Forearm roll bones off (plain Mixamo skeleton).", false);
+        }).checked(() -> twistEnabled).tip("Adds forearm roll bones for smoother wrist twists"));
+        p.tools.add(new Hud.Item(Theme.I_FIT, "Fit view", ortho::reset).tip("Show the whole model again"));
         // turning the model: a bare icon strip on top of the view
         p.viewIcons.add(new Hud.Item(Theme.I_ROT, "Rotate X", () -> turnInMarkers(Vector3.X)).tip("Tip the model 90 degrees forward (X axis)"));
         p.viewIcons.add(new Hud.Item(Theme.I_ROT_L, "Rotate Y", () -> turnInMarkers(Vector3.Y)).tip("Turn the model 90 degrees (Y axis)"));
@@ -331,41 +502,182 @@ public class Main extends ApplicationAdapter {
         hud.show(1, p);
     }
 
+    private void guessStatus() {
+        String note = pipeline.markers.guessNote;
+        hud.toast("Markers guessed from the shape. Check each one." + (note == null || note.isEmpty() ? ""
+            : " Not readable on this model: " + note.replaceAll("; $", "") + "."), false);
+    }
+
     private void showTest() {
         Hud.Panel p = new Hud.Panel();
         p.title = "Test & export";
         p.maxHeight = 0.5f;
-        p.hint = weightBone == -2 ? rigSummary : weightBone == -1
-            ? "Weights view: each colour is one bone; blends show where bones share the skin."
-            : "Weights of " + pipeline.skeleton.joints.get(weightBone).name + ": red 100%, blue 0%.";
-        p.chipsTitle = "Poses";
-        p.chips.add(new Hud.Item(Theme.I_WALK, "Walk", () -> {
-            walking = true;
-            currentPoseHolder.pose = null;
-            showTest();
-        }).checked(() -> walking));
-        for (final Poses.Pose ps : poses) {
-            char ic = ps.name.startsWith("Arms") ? Theme.I_TPOSE : ps.name.startsWith("Squat") || ps.name.startsWith("Kick")
-                ? Theme.I_RUN : ps.name.startsWith("Rest") ? Theme.I_PERSON : Theme.I_GYM;
-            p.chips.add(new Hud.Item(ic, ps.name, () -> {
-                walking = false;
-                currentPoseHolder.pose = ps;
-                applyPose(ps);
+        p.tabs.add(new Hud.Item(Theme.I_PLAY, "Animate", () -> setTestTab(0)).checked(() -> testTab == 0).tip("Play animations and test poses"));
+        p.tabs.add(new Hud.Item(Theme.I_BRUSH, "Paint", () -> setTestTab(1)).checked(() -> testTab == 1).tip("Fix skin weights by hand"));
+        p.tabs.add(new Hud.Item(Theme.I_SAVE, "Export", () -> setTestTab(2)).checked(() -> testTab == 2).tip("Bone names and animations in the file"));
+        final Skeleton sk = pipeline.skeleton;
+        if (testTab == 0) {
+            p.hint = weightBone == -2 ? rigSummary : weightBone == -1
+                ? "Weights view: each colour is one bone; blends show where bones share the skin."
+                : "Weights of " + sk.joints.get(weightBone).name + ": red 100%, blue 0%.";
+            p.chipsTitle = "Animations & poses";
+            char[] ci = {Theme.I_IDLE, Theme.I_WALK, Theme.I_SPEED, Theme.I_JUMP, Theme.I_WAVE};
+            for (int i = 0; i < Poses.CLIPS.length; i++) {
+                final String cn = Poses.CLIPS[i];
+                p.chips.add(new Hud.Item(ci[i], cn, () -> play(Poses.builtin(cn))).checked(() -> playing != null && playing.name().equals(cn))
+                    .tip("Play the " + cn.toLowerCase() + " animation"));
+            }
+            if (imported != null) p.chips.add(new Hud.Item(Theme.I_MOVIE, imported.name(), () -> play(imported)).checked(() -> playing == imported)
+                .tip("Play the animation you imported"));
+            for (final Poses.Pose ps : poses) {
+                char ic = ps.name.startsWith("Arms") ? Theme.I_TPOSE : ps.name.startsWith("Squat") || ps.name.startsWith("Kick")
+                    ? Theme.I_RUN : ps.name.startsWith("Rest") ? Theme.I_PERSON : Theme.I_GYM;
+                p.chips.add(new Hud.Item(ic, ps.name, () -> {
+                    playing = null;
+                    currentPoseHolder.pose = ps;
+                    applyPose(ps);
+                    showTest();
+                }).checked(() -> playing == null && currentPoseHolder.pose == ps));
+            }
+            p.toolsTitle = "View";
+            p.tools.add(new Hud.Item(Theme.I_IMPORT, "Import anim", this::importAnimation)
+                .tip("Play an animation from another GLB (Mixamo or Unreal bone names)"));
+            p.tools.add(new Hud.Item(Theme.I_BONES, "Bones", () -> {
+                showBones = !showBones;
                 showTest();
-            }).checked(() -> !walking && currentPoseHolder.pose == ps));
+            }).checked(() -> showBones).tip("Show or hide the skeleton"));
+            p.tools.add(new Hud.Item(Theme.I_PALETTE, "Weights", () -> setWeightView(weightBone == -2 ? -1 : -2))
+                .checked(() -> weightBone != -2).tip("Colour the skin by bone weights"));
+            p.tools.add(new Hud.Item(Theme.I_PREV, "Prev bone", () -> setWeightView(prevDeform(weightBone))).tip("Weights of the previous bone"));
+            p.tools.add(new Hud.Item(Theme.I_NEXT_SMALL, "Next bone", () -> setWeightView(nextDeform(weightBone))).tip("Weights of the next bone"));
+        } else if (testTab == 1) {
+            String bn = weightBone >= 0 ? sk.joints.get(weightBone).name : "none";
+            p.hint = pickBone ? "Tap the model where the bone you want is."
+                : "Bone: " + bn + ". Drag on the model to " + (paintMode == WeightPaint.Mode.ADD ? "give it more skin"
+                : paintMode == WeightPaint.Mode.SUBTRACT ? "take skin away from it" : "soften the blend")
+                + "; lift to see the result (red = this bone). Brush " + Math.round(brush * 100) + "% of height.";
+            p.chipsTitle = "Brush";
+            p.chipCols = 3;
+            p.chips.add(new Hud.Item(Theme.I_ADD, "Add", () -> setPaintMode(WeightPaint.Mode.ADD)).checked(() -> paintMode == WeightPaint.Mode.ADD));
+            p.chips.add(new Hud.Item(Theme.I_SUB, "Subtract", () -> setPaintMode(WeightPaint.Mode.SUBTRACT)).checked(() -> paintMode == WeightPaint.Mode.SUBTRACT));
+            p.chips.add(new Hud.Item(Theme.I_SMOOTH, "Smooth", () -> setPaintMode(WeightPaint.Mode.SMOOTH)).checked(() -> paintMode == WeightPaint.Mode.SMOOTH));
+            p.toolsTitle = "Bone & brush";
+            p.tools.add(new Hud.Item(Theme.I_TOUCH, "Pick bone", () -> {
+                pickBone = !pickBone;
+                showTest();
+            }).checked(() -> pickBone).tip("Then tap the model to choose the bone there"));
+            p.tools.add(new Hud.Item(Theme.I_PREV, "Prev bone", () -> setWeightView(prevDeform(weightBone))));
+            p.tools.add(new Hud.Item(Theme.I_NEXT_SMALL, "Next bone", () -> setWeightView(nextDeform(weightBone))));
+            p.tools.add(new Hud.Item(Theme.I_SUB, "Smaller", () -> {
+                brush = Math.max(0.015f, brush / 1.3f);
+                showTest();
+            }).tip("Smaller brush"));
+            p.tools.add(new Hud.Item(Theme.I_ADD, "Bigger", () -> {
+                brush = Math.min(0.25f, brush * 1.3f);
+                showTest();
+            }).tip("Bigger brush"));
+            p.tools.add(new Hud.Item(Theme.I_MIRROR, "Mirror", () -> {
+                paintMirror = !paintMirror;
+                showTest();
+            }).checked(() -> paintMirror).tip("Paint the left and right side together"));
+            p.tools.add(new Hud.Item(Theme.I_TURN, "Move view", () -> {
+                paintNav = !paintNav;
+                setInput();
+                showTest();
+            }).checked(() -> paintNav).tip("Turn the camera instead of painting"));
+            p.tools.add(new Hud.Item(Theme.I_UNDO, "Undo", () -> {
+                if (paint != null && paint.canUndo()) {
+                    paint.undo();
+                    setWeightView(weightBone);
+                } else hud.toast("Nothing to undo.", false);
+            }).tip("Take back the last stroke"));
+        } else {
+            p.hint = "Pick the bone names your engine expects and the animations to put inside the file.";
+            p.chipsTitle = "Bone names";
+            p.chipCols = 3;
+            String[] nm = {"Mixamo", "Unity", "Unreal"};
+            String[] nt = {"mixamorig:Hips ... works with Mixamo animations", "Plain names (Hips, LeftArm): Unity Humanoid maps them automatically",
+                "pelvis, thigh_l, upperarm_l ... Unreal mannequin names"};
+            for (int i = 0; i < 3; i++) {
+                final int ni = i;
+                p.chips.add(new Hud.Item(Theme.I_BONES, nm[i], () -> {
+                    naming = ni;
+                    showTest();
+                }).checked(() -> naming == ni).tip(nt[i]));
+            }
+            p.toolsTitle = "Animations in the file";
+            char[] ci = {Theme.I_IDLE, Theme.I_WALK, Theme.I_SPEED, Theme.I_JUMP, Theme.I_WAVE};
+            for (int i = 0; i < Poses.CLIPS.length; i++) {
+                final int ei = i;
+                p.tools.add(new Hud.Item(ci[i], Poses.CLIPS[i], () -> {
+                    exportClip[ei] = !exportClip[ei];
+                    showTest();
+                }).checked(() -> exportClip[ei]).tip("Put the " + Poses.CLIPS[i].toLowerCase() + " animation in the file"));
+            }
+            if (imported != null) p.tools.add(new Hud.Item(Theme.I_MOVIE, "Imported", () -> {
+                exportImported = !exportImported;
+                showTest();
+            }).checked(() -> exportImported).tip("Put the imported animation in the file"));
         }
-        p.toolsTitle = "View";
-        p.tools.add(new Hud.Item(Theme.I_BONES, "Bones", () -> {
-            showBones = !showBones;
-            showTest();
-        }).checked(() -> showBones));
-        p.tools.add(new Hud.Item(Theme.I_PALETTE, "Weights", () -> setWeightView(weightBone == -2 ? -1 : -2))
-            .checked(() -> weightBone != -2));
-        p.tools.add(new Hud.Item(Theme.I_PREV, "Prev bone", () -> setWeightView(prevDeform(weightBone))));
-        p.tools.add(new Hud.Item(Theme.I_NEXT_SMALL, "Next bone", () -> setWeightView(nextDeform(weightBone))));
         p.secondary = new Hud.Item(Theme.I_BACK, "Markers", this::backToMarkers);
         p.primary = new Hud.Item(Theme.I_SAVE, "Export GLB", this::exportGlb);
         hud.show(3, p);
+    }
+
+    private void play(Clip c) {
+        playing = c;
+        clipTime = 0;
+        currentPoseHolder.pose = null;
+        showTest();
+    }
+
+    private void setPaintMode(WeightPaint.Mode m) {
+        paintMode = m;
+        showTest();
+    }
+
+    private void setTestTab(int tab) {
+        if (tab == testTab) return;
+        boolean was = testTab == 1;
+        testTab = tab;
+        if (tab == 1) {
+            playing = null;
+            currentPoseHolder.pose = null;
+            pickBone = false;
+            if (paint == null) paint = new WeightPaint(pipeline.mesh, pipeline.skeleton, pipeline.joints, pipeline.weights);
+            setWeightView(weightBone >= 0 ? weightBone : pipeline.skeleton.index("LeftArm"));
+        } else if (was) {
+            if (paint != null && paint.dirty) {
+                pipeline.refreshOutput();
+                paint.dirty = false;
+            }
+            setWeightView(-2);
+        } else showTest();
+        setInput();
+    }
+
+    private void importAnimation() {
+        platform.pickModel(new Platform.FileCallback() {
+            @Override
+            public void onPicked(String name, byte[] data) {
+                try {
+                    String shortName = name.replaceAll("(?i)\\.glb$", "");
+                    Retarget r = new Retarget(data, shortName.length() > 14 ? shortName.substring(0, 14) : shortName);
+                    r.sample(pipeline.skeleton, 0, new Vector3());
+                    imported = r;
+                    exportImported = true;
+                    play(r);
+                    hud.toast("Playing " + name + ": " + r.matched + " bones matched, " + String.format(java.util.Locale.US, "%.1f", r.length()) + " s.", false);
+                } catch (RuntimeException e) {
+                    hud.toast("This animation can't be used: " + e.getMessage(), true);
+                }
+            }
+
+            @Override
+            public void onError(String message) {
+                hud.toast(message, !message.equals("No file chosen"));
+            }
+        });
     }
 
     // ------------------------------------------------------------------ steps
@@ -379,6 +691,11 @@ public class Main extends ApplicationAdapter {
             if (pipeline == null || !java.util.Arrays.equals(pipeline.orient.val, scene.modelInstance.transform.val)) {
                 pipeline = new RigPipeline(modelBytes, scene.modelInstance.transform);
                 pipeline.guessMarkers();
+                undo.clear();
+                redo.clear();
+                if (pendingMarkers != null && java.util.Arrays.equals(pendingOrient, pipeline.orient.val)) setMarkers(pendingMarkers);
+                pendingMarkers = null;
+                saveSession();
             }
         } catch (RuntimeException e) {
             Gdx.app.error("MobiRig", "analyse failed", e);
@@ -411,8 +728,10 @@ public class Main extends ApplicationAdapter {
             return;
         }
         framedForView = false;
+        undo.clear();
+        redo.clear();
+        saveSession();
         showMarkers();
-        hud.toast("Model turned. Markers were guessed again: check them.", false);
     }
 
     private void frameOrtho() {
@@ -432,6 +751,9 @@ public class Main extends ApplicationAdapter {
         loadScene(modelName, modelBytes, false);
         scene.modelInstance.transform.set(pipeline.orient);
         weightBone = -2;
+        playing = null;
+        paint = null;
+        testTab = 0;
         enterMarkers();
     }
 
@@ -442,6 +764,8 @@ public class Main extends ApplicationAdapter {
         final boolean android = Gdx.app.getType() == Application.ApplicationType.Android;
         final int res = android ? 96 : 128;
         pipeline.fingers = fingersEnabled;
+        pipeline.twist = twistEnabled;
+        saveSession();
         progressText = "Starting";
         progressF = 0;
         hud.progress("Rigging your character", "Starting...", 0);
@@ -477,7 +801,10 @@ public class Main extends ApplicationAdapter {
         frameModel();
         orbit.view(25f, 10f);
         currentPoseHolder.pose = null;
-        walking = false;
+        playing = null;
+        paint = null;
+        testTab = 0;
+        sk.localTranslation(0, hipsRest);
         float secs = (pipeline.fitMs + pipeline.bindMs + pipeline.exportMs + pipeline.qualityMs) / 1000f;
         float worst = 0;
         String worstName = "-";
@@ -512,7 +839,17 @@ public class Main extends ApplicationAdapter {
             return;
         }
         if (devPose != null) {
-            if (devPose.equals("Walk")) walking = true;
+            if (devPose.startsWith("Clip:")) {
+                String[] cp = devPose.substring(5).split("@");
+                playing = Poses.builtin(cp[0]);
+                if (cp.length > 1) {
+                    applyLocal(playing.sample(sk, Float.parseFloat(cp[1]), hipsOff), hipsOff);
+                    playing = null;
+                }
+            } else if (devPose.startsWith("Tab:")) {
+                setTestTab(Integer.parseInt(devPose.substring(4)));
+                return;
+            }
             else for (Poses.Pose p : poses) if (p.name.equals(devPose)) {
                 currentPoseHolder.pose = p;
                 applyPose(p);
@@ -568,17 +905,58 @@ public class Main extends ApplicationAdapter {
     }
 
     private void applyPose(Poses.Pose p) {
-        Quaternion[] rot = Poses.localRotations(pipeline.skeleton, p);
+        applyLocal(Poses.localRotations(pipeline.skeleton, p), Vector3.Zero);
+    }
+
+    private void applyLocal(Quaternion[] rot, Vector3 hips) {
         for (int j = 0; j < jointNodes.length; j++) if (jointNodes[j] != null) jointNodes[j].rotation.set(rot[j]);
+        if (jointNodes[0] != null) jointNodes[0].translation.set(hipsRest).add(hips);
         scene.modelInstance.calculateTransforms();
     }
 
+    private void drawBrush() {
+        Gdx.gl.glDisable(GL20.GL_DEPTH_TEST);
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Line);
+        shapes.setColor(1, 1, 1, 0.9f);
+        Vector3 right = new Vector3(camera.direction).crs(camera.up).nor(), up = new Vector3(right).crs(camera.direction).nor();
+        float r = brush * pipeline.mesh.height();
+        for (int side = paintMirror ? -1 : 1; side <= 1; side += 2) {
+            float cx = brushAt.x * side;
+            for (int i = 0; i < 40; i++) {
+                float a0 = i * MathUtils.PI2 / 40, a1 = (i + 1) * MathUtils.PI2 / 40;
+                shapes.line(cx + (right.x * MathUtils.cos(a0) + up.x * MathUtils.sin(a0)) * r, brushAt.y + (right.y * MathUtils.cos(a0) + up.y * MathUtils.sin(a0)) * r,
+                    brushAt.z + (right.z * MathUtils.cos(a0) + up.z * MathUtils.sin(a0)) * r,
+                    cx + (right.x * MathUtils.cos(a1) + up.x * MathUtils.sin(a1)) * r, brushAt.y + (right.y * MathUtils.cos(a1) + up.y * MathUtils.sin(a1)) * r,
+                    brushAt.z + (right.z * MathUtils.cos(a1) + up.z * MathUtils.sin(a1)) * r);
+            }
+        }
+        shapes.end();
+    }
+
     private void exportGlb() {
+        if (paint != null && paint.dirty) {
+            pipeline.refreshOutput();
+            paint.dirty = false;
+        }
+        pipeline.naming = naming;
+        pipeline.clips.clear();
+        for (int i = 0; i < Poses.CLIPS.length; i++) if (exportClip[i]) pipeline.clips.add(Poses.builtin(Poses.CLIPS[i]));
+        if (exportImported && imported != null) pipeline.clips.add(imported);
+        final byte[] out;
+        try {
+            out = pipeline.exportFinal();
+        } catch (RuntimeException e) {
+            hud.toast("Export failed: " + e.getMessage(), true);
+            return;
+        }
+        final int nClips = pipeline.clips.size;
         String base = modelName.toLowerCase().endsWith(".glb") ? modelName.substring(0, modelName.length() - 4) : modelName;
-        platform.saveFile(base + "_rigged.glb", pipeline.output, new Platform.SaveCallback() {
+        platform.saveFile(base + "_rigged.glb", out, new Platform.SaveCallback() {
             @Override
             public void onSaved(String where) {
-                hud.toast("Saved " + where + " (" + pipeline.output.length / 1024 + " KB, Mixamo skeleton).", false);
+                hud.toast("Saved " + where + " (" + out.length / 1024 + " KB, " + new String[]{"Mixamo", "Unity", "Unreal"}[naming] + " bone names, "
+                    + nClips + (nClips == 1 ? " animation)." : " animations)."), false);
             }
 
             @Override
@@ -648,9 +1026,13 @@ public class Main extends ApplicationAdapter {
         if (loadScene(name, data, false)) {
             modelBytes = data;
             pipeline = null;
+            imported = null;
+            boolean back = devMarkers == null && restoreSession();
             showOrient();
             setInput();
-            hud.toast("Loaded " + name + " (" + (data.length / 1024) + " KB).", false);
+            updateInfo();
+            hud.toast(back ? "Welcome back: your orientation" + (pendingMarkers != null ? " and markers" : "") + " for " + name + " were restored."
+                : "Loaded " + name + " (" + (data.length / 1024) + " KB).", false);
         }
     }
 
@@ -794,9 +1176,14 @@ public class Main extends ApplicationAdapter {
     @Override
     public void render() {
         float dt = Math.min(Gdx.graphics.getDeltaTime(), 0.1f);
-        if (step == Step.TEST && walking && jointNodes != null) {
-            walkTime += dt;
-            applyPose(Poses.walk(pipeline.skeleton, walkTime));
+        if (step == Step.TEST && playing != null && jointNodes != null) {
+            clipTime += dt;
+            try {
+                applyLocal(playing.sample(pipeline.skeleton, clipTime, hipsOff), hipsOff);
+            } catch (RuntimeException e) {
+                playing = null;
+                hud.toast("This animation can't be played: " + e.getMessage(), true);
+            }
         }
         if (step == Step.RIGGING && progressText != null) {
             hud.progress("Rigging your character", progressText + "  " + Math.round(progressF * 100) + "%", progressF);
@@ -823,6 +1210,7 @@ public class Main extends ApplicationAdapter {
         sceneManager.update(dt);
         sceneManager.render();
         if (step == Step.TEST && showBones && jointNodes != null && weightBone == -2) drawBones();
+        if (step == Step.TEST && testTab == 1 && brushShown) drawBrush();
         HdpiUtils.glViewport(0, 0, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
         if (step == Step.MARKERS && pipeline != null) drawMarkers();
         stage.draw();
